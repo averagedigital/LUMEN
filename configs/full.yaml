@@ -1,0 +1,7 @@
+seed: 20261109
+target: 200000
+max_attempts: 2000000
+variants_per_scene: 10
+min_disk_gib: 40
+min_ram_gib: 1
+source_manifest: null
