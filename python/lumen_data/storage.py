@@ -90,12 +90,17 @@ class Store:
             return {'id': row[0], 'payload': json.loads(row[1]), 'token': token}
 
     def heartbeat(self, task_id, token, now=None, lease_seconds=120):
+        self.heartbeat_many([{'id': task_id, 'token': token}], now, lease_seconds)
+
+    def heartbeat_many(self, tasks, now=None, lease_seconds=120):
         now = time.time() if now is None else now
         with self.db:
-            cursor = self.db.execute('''UPDATE tasks SET lease=? WHERE id=? AND token=?
-                AND status='running' AND lease>?''', (now + lease_seconds, task_id, token, now))
-            if cursor.rowcount != 1:
-                raise ValueError('lost lease')
+            for task in tasks:
+                cursor = self.db.execute('''UPDATE tasks SET lease=? WHERE id=? AND token=?
+                    AND status='running' AND lease>?''',
+                    (now + lease_seconds, task['id'], task['token'], now))
+                if cursor.rowcount != 1:
+                    raise ValueError('lost lease')
 
     def finish(self, task_id, token, status, result, now=None):
         if status not in ('accepted', 'rejected'):

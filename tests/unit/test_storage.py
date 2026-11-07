@@ -59,6 +59,22 @@ def test_retry_limit_is_explicit_terminal_rejection(tmp_path):
     assert 'lease_expired' in row[1]
 
 
+def test_batch_heartbeat_is_atomic_and_cannot_revive_expired_leases(tmp_path):
+    store = Store(tmp_path)
+    tasks = []
+    for key in ('one', 'two'):
+        store.enqueue(key, {})
+        tasks.append(store.claim(now=10, lease_seconds=5))
+    store.heartbeat_many(tasks, now=14, lease_seconds=10)
+    assert store.db.execute('SELECT DISTINCT lease FROM tasks').fetchall() == [(24,)]
+    stale = [tasks[0], {**tasks[1], 'token': 'stale'}]
+    with pytest.raises(ValueError, match='lost lease'):
+        store.heartbeat_many(stale, now=15, lease_seconds=20)
+    assert store.db.execute('SELECT DISTINCT lease FROM tasks').fetchall() == [(24,)]
+    with pytest.raises(ValueError, match='lost lease'):
+        store.heartbeat_many(tasks, now=24)
+
+
 def test_directory_durability_failure_is_not_reported_as_success(tmp_path, monkeypatch):
     store = Store(tmp_path)
     original = os.fsync

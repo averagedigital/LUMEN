@@ -1,5 +1,6 @@
 import base64
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import closing
 import fcntl
 import hashlib
@@ -236,10 +237,68 @@ def recipe(index, config, version):
             'dpr': 1, 'locale': locale, 'generator_revision': version}
 
 
+def save_result(store, task, result):
+    payload = task['payload']
+    if not result['status'].startswith('accepted'):
+        evidence = result.get('evidence')
+        detail = evidence.get('reason') if isinstance(evidence, dict) else None
+        if detail is None and result.get('error'):
+            detail = result['error']
+        store.finish(task['id'], task['token'], 'rejected', {'reason': result['status'],
+            'detail': detail, 'operator': payload['operator']})
+        if result['status'] == 'resource_error':
+            raise RuntimeError('browser resource_error; run stopped')
+        return
+    reference = base64.b64decode(result.pop('reference'), validate=True)
+    current = base64.b64decode(result.pop('current'), validate=True)
+    image_px = [v * payload['dpr'] for v in payload['viewport']]
+    assets, stats = image_artifacts(store, reference, current, image_px)
+    record = build_record(payload, result, assets, stats)
+    mask = decode_image(store.read(assets['raw_change_mask']), image_px)[:, :, 0]
+    if any(np.count_nonzero(mask[max(0, int(b[1])):int(np.ceil(b[3])),
+                                 max(0, int(b[0])):int(np.ceil(b[2]))]) < 8
+           for b in (i['bbox_xyxy_px'] for i in record['issues'])):
+        store.finish(task['id'], task['token'], 'rejected', {'reason': 'no_local_visible_effect'})
+        return
+    if result.get('scene'):
+        record['assets']['scene_html'] = store.put(result['scene']['html'].encode(), 'html')
+        scene_metadata = {k: v for k, v in result['scene'].items() if k != 'html'}
+        record['sidecars'] = {'scene': store.put(canonical(scene_metadata).encode(), 'json')}
+    else:
+        record['assets']['scene_html'] = payload['source']['html_hash']
+        record['sidecars'] = {}
+    if result.get('elements') is not None:
+        elements = [{k: v for k, v in element.items() if k != 'state'} for element in result['elements']]
+        states = {element['element_id']: element['state'] for element in result['elements']}
+        delta = {element['element_id']: element['state'] for element in result['statesAfter']
+                 if states.get(element['element_id']) != element['state']}
+        record['sidecars']['elements'] = store.put(canonical({'schema_version': 'lumen.elements.v1',
+            'scene_id': record['scene_id'], 'elements': elements}).encode(), 'json')
+        baseline = store.put(canonical({'schema_version': 'lumen.states.v1',
+            'scene_id': record['scene_id'], 'elements': states}).encode(), 'json')
+        record['sidecars']['states'] = store.put(canonical({'schema_version': 'lumen.state-delta.v1',
+            'case_id': record['case_id'], 'scene_id': record['scene_id'],
+            'baseline': baseline, 'delta': delta, 'scroll_before': result['scrollBefore'],
+            'scroll_after': result['scrollAfter']}).encode(), 'json')
+        record['sidecars']['tasks'] = store.put(canonical({'schema_version': 'lumen.tasks.v1',
+            'scene_id': record['scene_id'], 'task': result['scene']['task']}).encode(), 'json')
+        if result.get('interaction'):
+            record['sidecars']['interactions'] = store.put(canonical({'schema_version': 'lumen.interactions.v1',
+                'case_id': record['case_id'], 'scene_id': record['scene_id'],
+                **result['interaction']}).encode(), 'json')
+    try:
+        store.finish(task['id'], task['token'], 'accepted', record)
+    except sqlite3.IntegrityError:
+        store.finish(task['id'], task['token'], 'rejected', {'reason': 'duplicate_image'})
+
+
 def generate(config_path, run, target=None, resume=False):
     config = yaml.safe_load(Path(config_path).read_text())
     if config['variants_per_scene'] not in range(1, 17):
         raise ValueError('variants_per_scene must be between 1 and 16')
+    worker_count = config.get('workers', 1)
+    if type(worker_count) is not int or worker_count not in range(1, 5):
+        raise ValueError('workers must be between 1 and 4')
     target = config['target'] if target is None else target
     if target <= 0 or config['max_attempts'] < target:
         raise ValueError('invalid target or attempt budget')
@@ -263,88 +322,61 @@ def generate(config_path, run, target=None, resume=False):
         register_sources(store, config['source_manifest'])
     started = time.monotonic()
     initial_count = store.count()
-    worker = Worker(store.root / 'assets')
+    workers = []
     try:
-        attempts = store.db.execute('SELECT count(*) FROM tasks').fetchone()[0]
-        while store.count() < target:
+        for _ in range(worker_count):
             guard(root, config['min_disk_gib'], config['min_ram_gib'])
-            task = store.claim()
-            if task is None:
-                running = store.db.execute("SELECT count(*) FROM tasks WHERE status='running'").fetchone()[0]
-                if running:
-                    raise RuntimeError('active lease remains; resume after its deadline')
-                if attempts >= config['max_attempts']:
-                    break
-                payload = recipe(attempts, config, contract['generator_revision'])
-                base = attempts // config['variants_per_scene']
-                if config.get('source_manifest') and base % 2:
-                    row = store.db.execute('SELECT record FROM source_scenes ORDER BY id LIMIT 1 OFFSET ?', (base // 2,)).fetchone()
-                    if not row:
+            workers.append(Worker(store.root / 'assets'))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            attempts = store.db.execute('SELECT count(*) FROM tasks').fetchone()[0]
+            while store.count() < target:
+                guard(root, config['min_disk_gib'], config['min_ram_gib'])
+                batch = []
+                source_exhausted = False
+                for _ in range(min(worker_count, target - store.count())):
+                    task = store.claim()
+                    if task is None:
+                        running = store.db.execute("SELECT count(*) FROM tasks WHERE status='running'").fetchone()[0]
+                        if running > len(batch):
+                            raise RuntimeError('active lease remains; resume after its deadline')
+                        if attempts >= config['max_attempts']:
+                            break
+                        payload = recipe(attempts, config, contract['generator_revision'])
+                        base = attempts // config['variants_per_scene']
+                        if config.get('source_manifest') and base % 2:
+                            row = store.db.execute('SELECT record FROM source_scenes ORDER BY id LIMIT 1 OFFSET ?', (base // 2,)).fetchone()
+                            if not row:
+                                source_exhausted = True
+                                break
+                            payload['source'] = json.loads(row[0])
+                            payload['scene'] = None
+                            payload['locale'] = 'en-US'
+                        store.enqueue(case_id(payload), payload)
+                        attempts += 1
+                        task = store.claim()
+                    batch.append(task)
+                if not batch:
+                    if source_exhausted:
                         raise RuntimeError('prepared source scenes exhausted')
-                    payload['source'] = json.loads(row[0])
-                    payload['scene'] = None
-                    payload['locale'] = 'en-US'
-                store.enqueue(case_id(payload), payload)
-                attempts += 1
-                task = store.claim()
-            payload = task['payload']
-            result = worker.request(worker_payload(store, payload))
-            store.heartbeat(task['id'], task['token'])
-            if not result['status'].startswith('accepted'):
-                evidence = result.get('evidence')
-                detail = evidence.get('reason') if isinstance(evidence, dict) else None
-                if detail is None and result.get('error'):
-                    detail = result['error']
-                store.finish(task['id'], task['token'], 'rejected', {'reason': result['status'],
-                    'detail': detail, 'operator': payload['operator']})
-                if result['status'] == 'resource_error':
-                    raise RuntimeError('browser resource_error; run stopped')
-                continue
-            reference = base64.b64decode(result.pop('reference'), validate=True)
-            current = base64.b64decode(result.pop('current'), validate=True)
-            image_px = [v * payload['dpr'] for v in payload['viewport']]
-            assets, stats = image_artifacts(store, reference, current, image_px)
-            record = build_record(payload, result, assets, stats)
-            mask = decode_image(store.read(assets['raw_change_mask']), image_px)[:, :, 0]
-            if any(np.count_nonzero(mask[max(0, int(b[1])):int(np.ceil(b[3])),
-                                         max(0, int(b[0])):int(np.ceil(b[2]))]) < 8
-                   for b in (i['bbox_xyxy_px'] for i in record['issues'])):
-                store.finish(task['id'], task['token'], 'rejected', {'reason': 'no_local_visible_effect'})
-                continue
-            if result.get('scene'):
-                record['assets']['scene_html'] = store.put(result['scene']['html'].encode(), 'html')
-                scene_metadata = {k: v for k, v in result['scene'].items() if k != 'html'}
-                record['sidecars'] = {'scene': store.put(canonical(scene_metadata).encode(), 'json')}
-            else:
-                record['assets']['scene_html'] = payload['source']['html_hash']
-                record['sidecars'] = {}
-            if result.get('elements') is not None:
-                elements = [{k: v for k, v in element.items() if k != 'state'} for element in result['elements']]
-                states = {element['element_id']: element['state'] for element in result['elements']}
-                delta = {element['element_id']: element['state'] for element in result['statesAfter']
-                         if states.get(element['element_id']) != element['state']}
-                record['sidecars']['elements'] = store.put(canonical({'schema_version': 'lumen.elements.v1',
-                    'scene_id': record['scene_id'], 'elements': elements}).encode(), 'json')
-                baseline = store.put(canonical({'schema_version': 'lumen.states.v1',
-                    'scene_id': record['scene_id'], 'elements': states}).encode(), 'json')
-                record['sidecars']['states'] = store.put(canonical({'schema_version': 'lumen.state-delta.v1',
-                    'case_id': record['case_id'], 'scene_id': record['scene_id'],
-                    'baseline': baseline, 'delta': delta, 'scroll_before': result['scrollBefore'],
-                    'scroll_after': result['scrollAfter']}).encode(), 'json')
-                record['sidecars']['tasks'] = store.put(canonical({'schema_version': 'lumen.tasks.v1',
-                    'scene_id': record['scene_id'], 'task': result['scene']['task']}).encode(), 'json')
-                if result.get('interaction'):
-                    record['sidecars']['interactions'] = store.put(canonical({'schema_version': 'lumen.interactions.v1',
-                        'case_id': record['case_id'], 'scene_id': record['scene_id'],
-                        **result['interaction']}).encode(), 'json')
-            try:
-                store.finish(task['id'], task['token'], 'accepted', record)
-            except sqlite3.IntegrityError:
-                store.finish(task['id'], task['token'], 'rejected', {'reason': 'duplicate_image'})
-            if store.count() % 50 == 0:
-                print(canonical({'accepted': store.count(), 'attempts': attempts}), flush=True)
+                    break
+                futures = [executor.submit(worker.request, worker_payload(store, task['payload']))
+                           for worker, task in zip(workers, batch)]
+                # Commit recipe order, independent of render completion order.
+                for index, (task, future) in enumerate(zip(batch, futures)):
+                    store.heartbeat_many(batch[index:])
+                    while not wait([future], timeout=30).done:
+                        guard(root, config['min_disk_gib'], config['min_ram_gib'])
+                        store.heartbeat_many(batch[index:])
+                    store.heartbeat_many(batch[index:])
+                    guard(root, config['min_disk_gib'], config['min_ram_gib'])
+                    save_result(store, task, future.result())
+                    if store.count() % 50 == 0:
+                        print(canonical({'accepted': store.count(), 'attempts': attempts}), flush=True)
+                if source_exhausted:
+                    raise RuntimeError('prepared source scenes exhausted')
     finally:
-        worker.close()
+        for worker in workers:
+            worker.close()
         elapsed = time.monotonic() - started
         stats = {'accepted': store.count(), 'new_cases': store.count() - initial_count,
                  'elapsed_seconds': elapsed, 'accepted_cases_per_minute': (store.count() - initial_count) * 60 / elapsed,
