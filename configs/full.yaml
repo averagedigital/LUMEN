@@ -1,8 +1,8 @@
 seed: 20261109
-target: 200000
+target: 100000
 max_attempts: 2000000
 variants_per_scene: 10
 min_disk_gib: 40
 min_ram_gib: 1
-source_manifest: /data/sources/websight-renderable-v4.jsonl
+source_manifest: /data/sources/baseline-v1.jsonl
 workers: 4
