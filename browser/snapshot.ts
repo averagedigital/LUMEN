@@ -11,8 +11,21 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
   return page.evaluate(() => {
     const rect = (r: DOMRect): {x: number; y: number; width: number; height: number} =>
       ({x: r.x, y: r.y, width: r.width, height: r.height});
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const colors = canvas.getContext('2d', {willReadFrequently: true});
+    if (!colors) throw new Error('color conversion unavailable');
     const rgb = (s: string) => {
-      if (!/^(rgba?\(|color\(srgb )/.test(s)) return [];
+      if (!/^(rgba?\(|color\(srgb )/.test(s)) {
+        if (!CSS.supports('color', s)) return [];
+        colors.clearRect(0, 0, 1, 1);
+        colors.fillStyle = s;
+        colors.fillRect(0, 0, 1, 1);
+        const [r, g, b, alpha] = colors.getImageData(0, 0, 1, 1).data;
+        const sourceAlpha = s.match(/\/\s*([\d.e+-]+)(%)?\s*\)$/i);
+        if (s.includes('/') && !sourceAlpha) return [];
+        return [r, g, b, sourceAlpha ? Number(sourceAlpha[1]) / (sourceAlpha[2] ? 100 : 1) : alpha / 255];
+      }
       const values = s.match(/[-+]?(?:\d*\.)?\d+(?:e[-+]?\d+)?/gi)?.map(Number) ?? [];
       return s.startsWith('color(') ? values.map((v, i) => i < 3 ? Math.max(0, Math.min(1, v)) * 255 : v) : values;
     };

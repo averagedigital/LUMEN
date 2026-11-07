@@ -275,3 +275,26 @@ test('screen-reader-only link revealed on focus is available to visual validatio
     assert.ok((await snapshot(page)).some(state => state.text === 'Skip to content'));
   } finally { await page.close(); }
 });
+
+test('OKLCH source colors support contrast mutations and reject poor baselines', async () => {
+  const request = {html: '<body style="background:oklch(1 0 0);color:oklch(0 0 0);font:20px Arial"><h1>Account settings</h1></body>',
+    operator:'text_contrast_failure',seed:0,viewport:[800,600] as [number,number],dpr:1};
+  const result = await captureCase(browser, request);
+  assert.equal(result.status, 'accepted_bug', JSON.stringify(result.evidence));
+  assert.ok(result.issues.some(issue => issue.symptom === 'text_contrast_failure'));
+  const poor = await captureCase(browser, {...request, operator:'clean',
+    html:request.html.replace('color:oklch(0 0 0)', 'color:oklch(.95 0 0)')});
+  assert.equal(poor.status, 'invalid_baseline');
+});
+
+test('wide-gamut neutral colors retain contrast while translucent colors stay unverified', async () => {
+  const page = await browser.newPage();
+  try {
+    await page.setContent('<body style="background:color(display-p3 1 1 1);color:color(display-p3 0 0 0)"><h1>Account settings</h1></body>');
+    assert.equal((await snapshot(page))[0].contrast, 21);
+    for (const alpha of ['.5', '.999']) {
+      await page.locator('h1').evaluate((el, alpha) => { (el as HTMLElement).style.color=`oklch(0 0 0 / ${alpha})`; }, alpha);
+      assert.equal((await snapshot(page))[0].contrast, null, `translucent alpha ${alpha}`);
+    }
+  } finally { await page.close(); }
+});
