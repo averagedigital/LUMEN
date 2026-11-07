@@ -78,8 +78,9 @@ def test_portable_export_contains_sidecars_baseline_and_scene(tmp_path, format_n
         'baseline': baseline, 'delta': {}}).encode(), 'json'),
         'elements': store.put(b'{"schema_version":"lumen.elements.v1","elements":[]}', 'json')}
     css = store.put(b'body {color: black;}', 'css')
+    notice = store.put(b'MIT License\nCopyright example\nPermission notice', 'txt')
     record['recipe'] = {'source': {'assets': {'https://example.invalid/style.css': {
-        'sha256': css, 'content_type': 'text/css'}}}}
+        'sha256': css, 'content_type': 'text/css', 'license_sha256': notice}}}}
     record['provenance'].update(license='cc-by-4.0', public_release_status='research_only')
     accepted(store, record)
     output = tmp_path / 'out'
@@ -91,6 +92,7 @@ def test_portable_export_contains_sidecars_baseline_and_scene(tmp_path, format_n
     assert state['baseline'] == baseline
     assert json.loads((output / item['files']['states_baseline']).read_text())['elements'] == {}
     assert (output / item['files'][f'css_{css}']).read_bytes() == b'body {color: black;}'
+    assert (output / item['files'][f'license_{notice}']).read_bytes().startswith(b'MIT License')
     if format_name == 'hf-local':
         card = (output / 'README.md').read_text()
         assert 'license: mit' not in card.lower()

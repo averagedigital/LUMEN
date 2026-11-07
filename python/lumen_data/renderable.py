@@ -10,6 +10,7 @@ from .resource_guard import guard
 from .sources import download
 
 TAILWIND = 'https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css'
+TAILWIND_LICENSE = 'https://raw.githubusercontent.com/tailwindlabs/tailwindcss/v2.2.19/LICENSE'
 
 
 class StaticHTML(HTMLParser):
@@ -52,6 +53,11 @@ def prepare_renderable(manifest, output, asset_root):
     digest = hashlib.sha256(temporary_css.read_bytes()).hexdigest()
     css = asset_root / digest
     temporary_css.replace(css)
+    temporary_license = asset_root / 'tailwind-license.part'
+    guard(asset_root)
+    download(TAILWIND_LICENSE, temporary_license, max_bytes=65536)
+    license_digest = hashlib.sha256(temporary_license.read_bytes()).hexdigest()
+    temporary_license.replace(asset_root / license_digest)
     accepted, rejected = 0, Counter()
     with Path(manifest).open() as source, output.with_suffix('.part').open('w') as target:
         for line in source:
@@ -77,7 +83,8 @@ def prepare_renderable(manifest, output, asset_root):
             target.write(canonical({'html': html, 'source_project_id': source_id,
                 'base_scene_id': identity, 'template_lineage_id': source_id,
                 'structural_family_id': structure, 'provenance': record['provenance'],
-                'assets': {url: {'sha256': digest, 'content_type': 'text/css'} for url in assets}}) + '\n')
+                'assets': {url: {'sha256': digest, 'content_type': 'text/css',
+                    'license': 'MIT', 'license_sha256': license_digest} for url in assets}}) + '\n')
             accepted += 1
     output.with_suffix('.part').replace(output)
     return {'renderable_candidates': accepted, 'rejections': dict(rejected), 'manifest': str(output),

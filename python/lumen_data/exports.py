@@ -32,6 +32,9 @@ def portable_objects(store, record):
     for asset in (record.get('recipe', {}).get('source') or {}).get('assets', {}).values():
         digest = asset['sha256']
         objects.append((f'css_{digest}', digest, 'css', f'assets/{digest}'))
+        if asset.get('license_sha256'):
+            digest = asset['license_sha256']
+            objects.append((f'license_{digest}', digest, 'txt', f'licenses/{digest}.txt'))
     for name, digest, suffix, relative in objects:
         if not name.replace('_', '').isalnum():
             raise ValueError('invalid sidecar name')

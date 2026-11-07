@@ -35,6 +35,20 @@ def test_unknown_template_lineage_stays_in_one_source_group(tmp_path, monkeypatc
     assert rows[0]['template_lineage_id'] == rows[1]['template_lineage_id']
 
 
+def test_preparation_retains_stylesheet_license(tmp_path, monkeypatch):
+    monkeypatch.setattr(renderable, 'guard', lambda path: None)
+    def download(url, path, **kw):
+        path.write_text('MIT License\nCopyright example\nPermission notice' if url.endswith('/LICENSE') else 'body{}')
+    monkeypatch.setattr(renderable, 'download', download)
+    path = tmp_path / 'input.jsonl'
+    path.write_text(json.dumps({'source': 'websight', 'provenance': {},
+        'html': f'<link rel="stylesheet" href="{renderable.TAILWIND}"><h1>Title</h1>'}) + '\n')
+    output = tmp_path / 'ready.jsonl'
+    renderable.prepare_renderable(path, output, tmp_path / 'assets')
+    asset = json.loads(output.read_text())['assets'][renderable.TAILWIND]
+    assert (tmp_path / 'assets' / asset['license_sha256']).read_text().startswith('MIT License')
+
+
 def test_renderable_rechecks_output_disk_and_preserves_previous_manifest(tmp_path, monkeypatch):
     output = tmp_path / 'ready.jsonl'
     output.write_text('previous')

@@ -175,6 +175,16 @@ def register_sources(store, manifest):
                 target.parent.mkdir(exist_ok=True)
                 if not target.exists():
                     os.link(stored, target)
+                if asset.get('license_sha256'):
+                    notice = asset['license_sha256']
+                    if not store.path(notice, 'txt').exists():
+                        original = Path(os.environ['LUMEN_ASSET_ROOT']) / notice
+                        if original.stat().st_size > 65536:
+                            raise ValueError('source license size limit')
+                        content = original.read_bytes()
+                        if hashlib.sha256(content).hexdigest() != notice:
+                            raise ValueError('source license checksum')
+                        store.put(content, 'txt')
             record['html_hash'] = store.put(record.pop('html').encode(), 'html')
             with store.db:
                 store.db.execute('INSERT INTO source_scenes(scene_id,record) VALUES (?,?)',
