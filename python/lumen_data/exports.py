@@ -45,7 +45,7 @@ def portable_objects(store, record):
     return objects
 
 
-def tile_regions(record, size, overlap):
+def tile_regions(record, size, overlap, *, allow_original=False):
     width, height = record['capture']['image_px']
     axes = []
     for length in (width, height):
@@ -70,16 +70,21 @@ def tile_regions(record, size, overlap):
                 regions.append((crop, inside))
                 covered.update(inside)
     if len(covered) != len(record['issues']):
+        if allow_original:
+            return [([0, 0, width, height], list(range(len(record['issues']))))]
         raise ValueError(f'tile coverage incomplete for {record["case_id"]}; increase size or overlap')
     return regions
 
 
-def export_run(run, output, format_name, strict=False, public_safe=False, tile_size=None, tile_overlap=128):
+def export_run(run, output, format_name, strict=False, public_safe=False, tile_size=None,
+               tile_overlap=128, tile_uncovered='error'):
     if format_name not in ('yolo-singleclass', 'yolo-families', 'coco', 'diff-pairs', 'hf-local'):
         raise ValueError('unsupported export format')
     if tile_size is not None and (not format_name.startswith('yolo') or type(tile_size) is not int
                                  or type(tile_overlap) is not int or not 0 <= tile_overlap < tile_size):
         raise ValueError('invalid tile configuration')
+    if tile_uncovered not in ('error', 'original') or (tile_size is None and tile_uncovered != 'error'):
+        raise ValueError('invalid tile uncovered policy')
     store, output = Store(run), Path(output)
     store.db.execute('BEGIN')
     provenance = set()
@@ -90,14 +95,14 @@ def export_run(run, output, format_name, strict=False, public_safe=False, tile_s
         validate_case(record, public_safe=public_safe)
         check_case_assets(store, record)
         if tile_size is not None:
-            tile_regions(record, tile_size, tile_overlap)
+            tile_regions(record, tile_size, tile_overlap, allow_original=tile_uncovered == 'original')
         if format_name in ('diff-pairs', 'hf-local'):
             portable_objects(store, record)
         provenance.add((record['source_project_id'], record['provenance']['license'],
                         record['provenance'].get('public_release_status', 'unapproved')))
     output.mkdir(parents=True)
     count = 0
-    tile_count, background_tiles = 0, 0
+    tile_count, background_tiles, original_cases = 0, 0, 0
     if format_name.startswith('yolo'):
         for split in ('train', 'val', 'test'):
             (output / 'images' / split).mkdir(parents=True)
@@ -109,7 +114,8 @@ def export_run(run, output, format_name, strict=False, public_safe=False, tile_s
                 original = store.path(record['assets']['current'])
                 if tile_size:
                     link(original, output / 'originals' / split / f'{key}.png')
-                    regions = tile_regions(record, tile_size, tile_overlap)
+                    regions = tile_regions(record, tile_size, tile_overlap,
+                                           allow_original=tile_uncovered == 'original')
                 else:
                     regions = [([0, 0, *record['capture']['image_px']], list(range(len(record['issues']))))]
                 with Image.open(original) if tile_size else nullcontext() as image:
@@ -120,10 +126,13 @@ def export_run(run, output, format_name, strict=False, public_safe=False, tile_s
                         if tile_size:
                             guard(output)
                             image.crop(crop).save(destination)
+                            is_original = right - x > tile_size or bottom - y > tile_size
                             manifest.write(canonical({'case_id': key, 'tile_id': identity,
-                                'split': split, 'crop_xyxy_px': crop, 'issue_indices': indices}) + '\n')
-                            tile_count += 1
-                            background_tiles += not indices
+                                'split': split, 'crop_xyxy_px': crop, 'issue_indices': indices,
+                                'kind': 'original' if is_original else 'tile'}) + '\n')
+                            original_cases += is_original
+                            tile_count += not is_original
+                            background_tiles += not is_original and not indices
                         else:
                             link(original, destination)
                         lines = []
@@ -202,6 +211,8 @@ def export_run(run, output, format_name, strict=False, public_safe=False, tile_s
     report = {'format': format_name, 'cases': count, 'strict': strict, 'public_safe': public_safe}
     if tile_size:
         report.update(tiles=tile_count, background_tiles=background_tiles, tile_size=tile_size,
-                      tile_overlap=tile_overlap, partial_issue_policy='exclude_tile_require_full_coverage')
+                      original_cases=original_cases, images=tile_count + original_cases,
+                      tile_overlap=tile_overlap, uncovered_issue_policy=tile_uncovered,
+                      partial_issue_policy='exclude_tile_require_full_coverage')
     (output / 'export.json').write_text(canonical(report) + '\n')
     return {**report, 'output': str(output)}

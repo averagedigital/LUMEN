@@ -53,6 +53,7 @@ def main():
     export.add_argument('--public-safe', action='store_true')
     export.add_argument('--tile-size', type=int)
     export.add_argument('--tile-overlap', type=int, default=128)
+    export.add_argument('--tile-uncovered', choices=('error', 'original'), default='error')
     reproduce = commands.add_parser('reproduce')
     reproduce.add_argument('--run', required=True)
     reproduce.add_argument('--case', required=True)
@@ -86,7 +87,7 @@ def main():
             result = json.loads((Path(args.run) / 'profile.json').read_text())
         elif args.command == 'export':
             result = export_run(args.run, args.output, args.format, args.strict, args.public_safe,
-                                args.tile_size, args.tile_overlap)
+                                args.tile_size, args.tile_overlap, args.tile_uncovered)
         elif args.command == 'review':
             from .review import build_review
             result = build_review(args.run)

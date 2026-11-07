@@ -237,3 +237,56 @@ def test_positive_tile_offsets_match_cropped_pixels(tmp_path):
     assert list(map(float, label)) == [0, .375, .5, .5, .25]
     with Image.open(output / 'images' / record['split'] / f'{identity}.png') as image:
         assert np.array_equal(np.array(image), after[20:100, 120:200])
+
+
+def test_explicit_original_policy_preserves_wide_issue_and_native_pixels(tmp_path):
+    from PIL import Image
+    store = Store(tmp_path / 'run')
+    record = valid_case()
+    record['issues'][0]['bbox_xyxy_px'] = [10, 10, 150, 30]
+    record['issues'][0]['context_bbox_xyxy_px'] = [0, 0, 170, 50]
+    before = np.full((100, 200, 3), 255, np.uint8)
+    after = before.copy()
+    after[10:30, 10:150] = 0
+    mask = np.any(before != after, axis=2).astype(np.uint8) * 255
+    record['assets'] = {'reference': store.put(png(before)), 'current': store.put(png(after)),
+                        'raw_change_mask': store.put(png(mask))}
+    accepted(store, record)
+    with pytest.raises(ValueError, match='coverage'):
+        export_run(store.root, tmp_path / 'strict', 'yolo-singleclass', tile_size=80, tile_overlap=20)
+    assert not (tmp_path / 'strict').exists()
+    output = tmp_path / 'mixed'
+    report = export_run(store.root, output, 'yolo-singleclass', tile_size=80, tile_overlap=20,
+                        tile_uncovered='original')
+    assert report['cases'] == report['images'] == report['original_cases'] == 1
+    assert report['tiles'] == report['background_tiles'] == 0
+    assert report['uncovered_issue_policy'] == 'original'
+    rows = [json.loads(line) for line in (output / 'tiles.jsonl').read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]['kind'] == 'original'
+    assert rows[0]['crop_xyxy_px'] == [0, 0, 200, 100] and rows[0]['issue_indices'] == [0]
+    assert rows[0]['case_id'] == record['case_id'] and rows[0]['split'] == record['split']
+    with Image.open(next((output / 'images').rglob('*.png'))) as image:
+        assert np.array_equal(np.array(image), after)
+    label = next((output / 'labels').rglob('*.txt')).read_text().split()
+    assert list(map(float, label)) == [0, .4, .2, .7, .2]
+
+
+def test_original_policy_handles_coverage_gaps_but_keeps_tile_work_bound():
+    from lumen_data.exports import tile_regions
+    record = valid_case()
+    record['capture']['image_px'] = [1920, 1080]
+    record['issues'][0]['bbox_xyxy_px'] = [850, 10, 1100, 100]
+    assert tile_regions(record, 1024, 128, allow_original=True) == [([0, 0, 1920, 1080], [0])]
+    with pytest.raises(ValueError, match='256'):
+        tile_regions(record, 32, 31, allow_original=True)
+    record['issues'] = []
+    assert tile_regions(record, 1024, 128, allow_original=True) == tile_regions(record, 1024, 128)
+
+
+@pytest.mark.parametrize('options', [{'tile_uncovered': 'original'},
+                                    {'tile_size': 1024, 'tile_uncovered': 'ignore'}])
+def test_invalid_uncovered_policy_fails_before_export(tmp_path, options):
+    with pytest.raises(ValueError, match='tile'):
+        export_run(tmp_path / 'run', tmp_path / 'out', 'yolo-singleclass', **options)
+    assert not (tmp_path / 'out').exists()
