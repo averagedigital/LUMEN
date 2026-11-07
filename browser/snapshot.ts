@@ -4,7 +4,7 @@ import type { Rect } from './geometry.ts';
 export type ElementState = {
   id: string; text: string; rect: Rect; textRect: Rect; visibleRatio: number;
   hitRatio: number; contrast: number | null; background: string | null;
-  intentional: boolean; fullyInViewport: boolean;
+  intentional: boolean; fullyInViewport: boolean; viewportBound: boolean;
 };
 
 export async function snapshot(page: Page): Promise<ElementState[]> {
@@ -25,7 +25,8 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
     pointerStyle.textContent = '*,*::before,*::after{pointer-events:auto!important}';
     document.head.append(pointerStyle);
     const result = elements.flatMap((el, i) => {
-      el.dataset.lumenId = String(i);
+      el.dataset.lumenId ??= el.dataset.elementId ?? String(i);
+      if (!el.checkVisibility({contentVisibilityAuto: true})) return [];
       const style = getComputedStyle(el), bounds = el.getBoundingClientRect();
       if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0 ||
           bounds.width <= 0 || bounds.height <= 0) return [];
@@ -38,9 +39,11 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
       let background: string | null = null;
       let backgroundComplex = false;
       let effectiveOpacity = 1;
+      let viewportBound = false;
       for (let ancestor: HTMLElement | null = el; ancestor; ancestor = ancestor.parentElement) {
         const css = getComputedStyle(ancestor), r = ancestor.getBoundingClientRect();
         effectiveOpacity *= Number(css.opacity);
+        viewportBound ||= ['fixed', 'sticky'].includes(css.position);
         if (['auto', 'scroll'].includes(css.overflowX) || ['auto', 'scroll'].includes(css.overflowY) ||
             css.textOverflow === 'ellipsis' || (css.webkitLineClamp !== 'none' && css.webkitLineClamp !== '0')) intentional = true;
         if (['hidden', 'clip', 'auto', 'scroll'].includes(css.overflowX)) {
@@ -83,10 +86,10 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
         (foreground.length === 4 && foreground[3] !== 1) ? null :
         (Math.max(luminance(foreground), luminance(bg)) + .05) /
         (Math.min(luminance(foreground), luminance(bg)) + .05);
-      return [{id: String(i), text: el.textContent?.trim() ?? '', rect: rect(bounds),
+      return [{id: el.dataset.lumenId, text: el.textContent?.trim() ?? '', rect: rect(bounds),
         textRect: rect(textBounds), visibleRatio: area ? visible / area : 0,
         hitRatio: samples ? hits / samples : 0, contrast, background,
-        intentional, fullyInViewport: textBounds.left >= 0 && textBounds.top >= 0 &&
+        intentional, viewportBound, fullyInViewport: textBounds.left >= 0 && textBounds.top >= 0 &&
           textBounds.right <= innerWidth && textBounds.bottom <= innerHeight}];
     });
     pointerStyle.remove();

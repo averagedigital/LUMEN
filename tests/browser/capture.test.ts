@@ -70,6 +70,12 @@ test('partially cut off baseline text is never a clean negative', async () => {
   assert.equal(result.status, 'invalid_baseline');
 });
 
+test('fixed text clipped by the top viewport edge is not a clean negative', async () => {
+  const page = html.replace('</body>', '<p style="position:fixed;left:100px;top:-20px;line-height:30px;margin:0">Important account details</p></body>');
+  const result = await captureCase(browser, {html: page, operator: 'clean', seed: 1, viewport: [800, 600], dpr: 1});
+  assert.equal(result.status, 'invalid_baseline');
+});
+
 test('pointer-events none does not make opaque overlays visually transparent', async () => {
   const page = html.replace('</body>', '<div style="position:fixed;inset:0;background:white;pointer-events:none;z-index:100"></div></body>');
   const result = await captureCase(browser, {html: page, operator: 'clean', seed: 1, viewport: [800, 600], dpr: 1});
@@ -80,4 +86,21 @@ test('invisible ancestor text cannot produce an accepted defect on empty pixels'
   const page = '<body style="background:white"><div style="opacity:0"><span style="display:block;line-height:30px">Hidden account information</span></div><p>Visible account information</p></body>';
   const result = await captureCase(browser, {html: page, operator: 'text_clip_y', seed: 0, viewport: [800, 600], dpr: 1});
   if (result.status === 'accepted_bug') assert.ok(result.issues.every(issue => issue.id !== '0'));
+});
+
+test('native action records a benign transition and optional structural sidecars', async () => {
+  const page = html.replace('</body>', '<details><summary data-element-id="help-toggle">Help</summary><p>Account changes are saved locally.</p></details></body>');
+  const result = await captureCase(browser, {html: page, operator: 'benign_action', seed: 1,
+    viewport: [800, 600], dpr: 1, annotations: true});
+  assert.equal(result.status, 'accepted_benign_change');
+  assert.equal(result.interaction?.origin, 'synthetic');
+  assert.ok(result.elements?.some(e => e.element_id === 'help-toggle' && e.role === 'button'));
+  assert.equal(result.rollback, true);
+  assert.deepEqual(result.scrollBefore, result.scrollAfter);
+});
+
+test('closed details content is not a visible occlusion defect', async () => {
+  const page = html.replace('</body>', '<details><summary>Help</summary><p>Hidden help text should not be measured.</p></details></body>');
+  const result = await captureCase(browser, {html: page, operator: 'clean', seed: 1, viewport: [800, 600], dpr: 1});
+  assert.equal(result.status, 'accepted_clean');
 });

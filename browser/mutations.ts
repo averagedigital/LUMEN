@@ -2,7 +2,7 @@ import type { Page } from 'playwright';
 import type { ElementState } from './snapshot.ts';
 
 export const OPERATORS = ['text_clip_x', 'text_clip_y', 'text_contrast_failure',
-  'viewport_partial_cutoff', 'sibling_occlusion', 'clean', 'benign_theme'] as const;
+  'viewport_partial_cutoff', 'sibling_occlusion', 'clean', 'benign_theme', 'benign_action'] as const;
 export type Operator = typeof OPERATORS[number];
 export type Receipt = { operator: string; target: string; params: Record<string, unknown> };
 
