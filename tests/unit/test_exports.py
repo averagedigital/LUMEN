@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from lumen_data.contracts import group_split
 from lumen_data.exports import export_run
 from lumen_data.storage import Store
 from test_contracts import valid_case
@@ -15,9 +16,12 @@ def accepted(store, record):
     store.finish(task['id'], task['token'], 'accepted', record)
 
 
-def test_yolo_uses_actual_normalized_boxes_and_coco_xywh(tmp_path):
+@pytest.mark.parametrize('group', ['lumen-grammar-v2/admin', 'lumen-grammar-v2/chat',
+                                 'lumen-grammar-v2/calendar'])
+def test_yolo_and_coco_preserve_geometry_and_group_split(tmp_path, group):
     store = Store(tmp_path / 'run')
     record = valid_case()
+    record.update(split_group=group, split=group_split(group))
     before = np.full((100, 200, 3), 255, np.uint8)
     after = before.copy()
     after[10:30, 10:50] = 0
@@ -31,6 +35,15 @@ def test_yolo_uses_actual_normalized_boxes_and_coco_xywh(tmp_path):
     export_run(store.root, tmp_path / 'coco', 'coco', strict=True)
     coco = json.loads((tmp_path / 'coco' / 'annotations.json').read_text())
     assert coco['annotations'][0]['bbox'] == [10, 10, 40, 20]
+    assert coco['images'][0]['split'] == record['split']
+    assert coco['images'][0]['split_group'] == group
+    for split in ('train', 'val', 'test'):
+        selected = json.loads((tmp_path / 'coco' / f'annotations-{split}.json').read_text())
+        if split == record['split']:
+            assert selected == coco
+        else:
+            assert selected['images'] == selected['annotations'] == []
+            assert selected['categories'] == coco['categories']
 
 
 def test_strict_export_never_converts_unknown_annotation_to_background(tmp_path):
@@ -40,6 +53,33 @@ def test_strict_export_never_converts_unknown_annotation_to_background(tmp_path)
     accepted(store, record)
     with pytest.raises(ValueError, match='incomplete'):
         export_run(store.root, tmp_path / 'out', 'yolo-singleclass', strict=True)
+
+
+def test_coco_mixed_splits_keep_annotations_attached_to_their_images(tmp_path):
+    store = Store(tmp_path / 'run')
+    expected = {}
+    for index, family in enumerate(('chat', 'admin', 'calendar', 'admin')):
+        record = valid_case()
+        group = f'lumen-grammar-v2/{family}'
+        record.update(case_id=f'{index:064x}', split_group=group, split=group_split(group))
+        x = 10 + index * 10
+        record['issues'][0]['bbox_xyxy_px'] = [x, 10, x + 10, 20]
+        before = np.full((100, 200, 3), 250 + index, np.uint8)
+        after = before.copy()
+        after[10:20, x:x + 10] = 0
+        mask = np.any(before != after, axis=2).astype(np.uint8) * 255
+        record['assets'] = {'reference': store.put(png(before)), 'current': store.put(png(after)),
+                            'raw_change_mask': store.put(png(mask))}
+        accepted(store, record)
+        expected[f'images/{record["case_id"]}.png'] = (record['split'], [x, 10, 10, 10])
+    output = tmp_path / 'coco'
+    assert export_run(store.root, output, 'coco')['cases'] == 4
+    assert len(list((output / 'images').glob('*.png'))) == 4
+    for split in ('train', 'val', 'test'):
+        coco = json.loads((output / f'annotations-{split}.json').read_text())
+        images = {row['id']: row for row in coco['images']}
+        actual = {images[row['image_id']]['file_name']: row['bbox'] for row in coco['annotations']}
+        assert actual == {name: box for name, (assigned, box) in expected.items() if assigned == split}
 
 
 def test_strict_export_rejects_corrupt_image(tmp_path):

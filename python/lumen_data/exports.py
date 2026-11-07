@@ -139,28 +139,34 @@ def export_run(run, output, format_name, strict=False, public_safe=False, tile_s
             'train': 'images/train', 'val': 'images/val', 'test': 'images/test',
             'names': dict(enumerate(names))}, sort_keys=False))
     elif format_name == 'coco':
-        with (output / 'annotations.json').open('w') as handle:
-            handle.write('{"images":[')
-            for i, record in enumerate(store.records()):
-                if i:
-                    handle.write(',')
-                name = f'images/{record["case_id"]}.png'
-                link(store.path(record['assets']['current']), output / name)
-                width, height = record['capture']['image_px']
-                handle.write(canonical({'id': i, 'file_name': name, 'width': width, 'height': height}))
-                count += 1
-            handle.write('],"annotations":[')
-            annotation = 0
-            for i, record in enumerate(store.records()):
-                for issue in record['issues']:
-                    if annotation:
+        for selected_split in (None, 'train', 'val', 'test'):
+            filename = f'annotations-{selected_split}.json' if selected_split else 'annotations.json'
+            with (output / filename).open('w') as handle:
+                handle.write('{"images":[')
+                records = (r for r in store.records() if selected_split is None or r['split'] == selected_split)
+                for i, record in enumerate(records):
+                    if i:
                         handle.write(',')
-                    box = Box(*issue['bbox_xyxy_px'])
-                    handle.write(canonical({'id': annotation, 'image_id': i, 'category_id': 0,
-                        'bbox': [box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1],
-                        'area': (box.x2 - box.x1) * (box.y2 - box.y1), 'iscrowd': 0}))
-                    annotation += 1
-            handle.write('],"categories":[{"id":0,"name":"ui_defect"}]}\n')
+                    name = f'images/{record["case_id"]}.png'
+                    if selected_split is None:
+                        link(store.path(record['assets']['current']), output / name)
+                        count += 1
+                    width, height = record['capture']['image_px']
+                    handle.write(canonical({'id': i, 'file_name': name, 'width': width,
+                        'height': height, 'split': record['split'], 'split_group': record['split_group']}))
+                handle.write('],"annotations":[')
+                annotation = 0
+                records = (r for r in store.records() if selected_split is None or r['split'] == selected_split)
+                for i, record in enumerate(records):
+                    for issue in record['issues']:
+                        if annotation:
+                            handle.write(',')
+                        box = Box(*issue['bbox_xyxy_px'])
+                        handle.write(canonical({'id': annotation, 'image_id': i, 'category_id': 0,
+                            'bbox': [box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1],
+                            'area': (box.x2 - box.x1) * (box.y2 - box.y1), 'iscrowd': 0}))
+                        annotation += 1
+                handle.write('],"categories":[{"id":0,"name":"ui_defect"}]}\n')
     else:
         handle = None
         try:
