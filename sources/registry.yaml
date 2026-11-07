@@ -1,0 +1,52 @@
+sources:
+  - id: websight
+    repository: HuggingFaceM4/WebSight
+    config: v0.2
+    role: browser_mutation_source
+    license: cc-by-4.0
+    assets_rights: unknown
+    public_release_status: research_only
+  - id: webcode2m
+    repository: xcodemind/webcode2m_purified
+    config: default
+    role: browser_mutation_source
+    license: cc-by-4.0
+    assets_rights: unknown
+    public_release_status: research_only
+  - id: screenparse
+    repository: docling-project/screenparse
+    config: default
+    role: element_annotations
+    license: cc-by-4.0
+    bbox_format: xywh
+    assets_rights: unknown
+    public_release_status: research_only
+  - id: ui_lens
+    repository: wuhuohua/UI_lens
+    config: default
+    role: external_benchmark
+    license: unknown
+    assets_rights: unknown
+    public_release_status: research_only
+  - id: diffspot
+    repository: tencent/DiffSpot
+    config: default
+    role: external_benchmark
+    license: unknown
+    assets_rights: unknown
+    public_release_status: research_only
+  - id: webui
+    url: https://github.com/js0nwu/webui
+    role: element_annotations
+    license: custom
+    public_release_status: research_only
+  - id: rico
+    url: https://dev.interactionmining.org/archive/rico
+    role: native_domain_holdout
+    license: unknown
+    public_release_status: research_only
+  - id: uiclip
+    url: https://uimodeling.github.io/uiclip/
+    role: methodology_only
+    license: unknown
+    public_release_status: research_only
