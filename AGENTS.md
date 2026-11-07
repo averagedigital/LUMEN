@@ -8,5 +8,6 @@
 - Inspect the diff and scan secrets before staging and after staging.
 - Keep source data, credentials, infrastructure addresses and generated artifacts out of Git.
 - Run builds, tests and dataset jobs on the designated compute host.
+- Do not add CI/CD workflows. Run checks before each local commit.
 - Keep source licenses and provenance. Do not publish assets with unverified rights.
 - Review nontrivial changes independently before fixing confirmed findings.
