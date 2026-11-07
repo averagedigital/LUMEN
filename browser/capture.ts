@@ -133,5 +133,10 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       rollback: true, browser: browser.version(), elements, statesAfter, interaction, scrollBefore, scrollAfter,
       timings: {baseline: captured - started,
         mutation_capture_oracle: verified - captured, rollback: performance.now() - verified}};
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('scene_limit: text elements')) {
+      return {status: 'invalid_baseline', issues: [], evidence: {reason: 'text_element_limit'}};
+    }
+    throw error;
   } finally { clearTimeout(deadline); await context.close(); }
 }

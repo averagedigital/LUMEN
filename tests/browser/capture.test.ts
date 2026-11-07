@@ -46,6 +46,13 @@ test('unavailable target is rejected instead of becoming a negative', async () =
   assert.equal(result.status, 'inapplicable');
 });
 
+test('oversized text scene is rejected as a baseline instead of stopping the worker', async () => {
+  const result = await captureCase(browser, {html: '<body>' + '<p>Visible text</p>'.repeat(501) + '</body>',
+    operator: 'clean', seed: 1, viewport: [800, 600], dpr: 1});
+  assert.equal(result.status, 'invalid_baseline');
+  assert.deepEqual(result.evidence, {reason: 'text_element_limit'});
+});
+
 test('occlusion without a second visible element is inapplicable', async () => {
   const result = await captureCase(browser, {html: '<body style="background:white;color:black"><h1>Only heading</h1></body>',
     operator: 'sibling_occlusion', seed: 1, viewport: [800, 600], dpr: 1});
