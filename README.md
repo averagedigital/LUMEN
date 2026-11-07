@@ -20,4 +20,8 @@ INSPECT: обрезка, перекрытие и недостаточный ко
 
 Модуль захвата публичных демо принимает конечные HTTPS-адреса из allowlist. Редиректы, неполные ресурсы и несовпадение офлайн-копии отклоняются.
 
+`lumen-data sources capture --manifest candidates.jsonl --output captures --limit 100` сохраняет checkpoint и manifest для генератора. Повторный запуск обрабатывает только pending. Ошибки ресурсов останавливают запуск.
+
+Строка candidates JSONL содержит `url`, `allowed_hosts`, `kind` (`screen` или `block`), `source_project_id`, `template_lineage_id`, `structural_family_id` и `provenance.license`. Захваты имеют статус `research_only`; точные дубликаты PNG исключаются.
+
 Ход работы: [DEVLOG](docs/DEVLOG.md).

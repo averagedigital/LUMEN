@@ -33,16 +33,17 @@ REQUEST_TIMEOUT_SECONDS = 60
 
 
 class Worker:
-    def __init__(self, asset_root=None):
+    def __init__(self, asset_root=None, *, entry='browser/worker.ts', timeout=None):
+        self.timeout = REQUEST_TIMEOUT_SECONDS if timeout is None else timeout
         env = dict(os.environ)
         if asset_root is not None:
             env['LUMEN_ASSET_ROOT'] = str(Path(asset_root).resolve())
-        self.process = subprocess.Popen(['node', '--experimental-strip-types', 'browser/worker.ts'],
+        self.process = subprocess.Popen(['node', '--experimental-strip-types', entry],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
         os.set_blocking(self.process.stdin.fileno(), False)
 
     def request(self, payload):
-        deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
+        deadline = time.monotonic() + self.timeout
         message = memoryview((canonical(payload) + '\n').encode())
         sent = 0
         while sent < len(message):

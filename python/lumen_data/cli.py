@@ -31,6 +31,10 @@ def main():
     renderable.add_argument('--manifest', required=True)
     renderable.add_argument('--output', required=True)
     renderable.add_argument('--assets', required=True)
+    capture = sources.add_parser('capture')
+    capture.add_argument('--manifest', required=True)
+    capture.add_argument('--output', required=True)
+    capture.add_argument('--limit', required=True, type=int)
     plan = commands.add_parser('plan')
     plan.add_argument('--config', required=True)
     generate_command = commands.add_parser('generate')
@@ -62,9 +66,12 @@ def main():
                 result = audit(args.registry, args.output)
             elif args.source_command == 'prepare':
                 result = prepare(args.audit, args.source, args.output, args.max_shards, args.max_rows)
-            else:
+            elif args.source_command == 'renderable':
                 from .renderable import prepare_renderable
                 result = prepare_renderable(args.manifest, args.output, args.assets)
+            else:
+                from .public_sources import capture_sources
+                result = capture_sources(args.manifest, args.output, args.limit)
         elif args.command == 'plan':
             import yaml
             config = yaml.safe_load(Path(args.config).read_text())

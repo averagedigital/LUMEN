@@ -6,6 +6,8 @@ import {join} from 'node:path';
 import {annotations} from './annotations.ts';
 
 export type SourceRequest = {url: string; allowed_hosts: string[]; asset_root: string};
+export class SourceRejected extends Error {}
+
 type Asset = {sha256: string; content_type: string};
 const sha = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 const contentTypes = ['text/css', 'font/woff2', 'image/jpeg', 'image/png', 'image/svg+xml', 'image/webp'];
@@ -30,14 +32,14 @@ function fetchResource(url: string, headers: Record<string,string>, signal: Abor
           while(!status) {
             const end=header.indexOf('\r\n\r\n');
             if(end<0) {
-              if(headerBytes+header.length>65536) throw new Error('source header size limit');
+              if(headerBytes+header.length>65536) throw new SourceRejected('source header size limit');
               return;
             }
             headerBytes+=end+4;
-            if(headerBytes>65536) throw new Error('source header size limit');
+            if(headerBytes>65536) throw new SourceRejected('source header size limit');
             const lines=header.subarray(0,end).toString('latin1').split('\r\n');
             const code=Number(lines.shift()?.split(' ')[1]);
-            if(!Number.isInteger(code)||code<100||code>599) throw new Error('source HTTP headers');
+            if(!Number.isInteger(code)||code<100||code>599) throw new SourceRejected('source HTTP headers');
             header=header.subarray(end+4);
             if(code<200) continue;
             status=code;
@@ -49,7 +51,7 @@ function fetchResource(url: string, headers: Record<string,string>, signal: Abor
           chunk=header;header=Buffer.alloc(0);
         }
         bytes+=chunk.length;account(chunk.length);
-        if(bytes>8*2**20) throw new Error('source response size limit');
+        if(bytes>8*2**20) throw new SourceRejected('source response size limit');
         chunks.push(chunk);
       } catch(error) {fail(error as Error);}
     });
@@ -71,8 +73,11 @@ async function validateRaster(body:Buffer, contentType:string, signal:AbortSigna
     child.stdout.on('data',chunk=>{output+=chunk.toString();if(output.length>100) child.kill('SIGKILL');});
     child.stdin.on('error',error=>{failure??=error;});
     child.on('error',error=>{failure??=error;});
-    child.on('close',code=>code===0&&!failure&&Number.isInteger(Number(output))?
-      resolve(Number(output)):reject(new Error('source raster validation failed')));
+    child.on('close',code=>{
+      if(code===0&&!failure&&Number.isInteger(Number(output))) resolve(Number(output));
+      else if(code===2&&!failure) reject(new SourceRejected('source raster validation failed'));
+      else reject(new Error('source raster validator unavailable'));
+    });
     child.stdin.end(body);
   });
 }
@@ -106,9 +111,9 @@ async function saveAsset(root: string, body: Buffer) {
 }
 
 export async function captureSource(page: Page, request: SourceRequest) {
-  if (!permitted(request.url, request.allowed_hosts)) throw new Error('unapproved source URL');
+  if (!permitted(request.url, request.allowed_hosts)) throw new SourceRejected('unapproved source URL');
   const viewport = page.viewportSize();
-  if (!viewport || viewport.width * viewport.height > 4_194_304) throw new Error('source viewport limit');
+  if (!viewport || viewport.width * viewport.height > 4_194_304) throw new SourceRejected('source viewport limit');
   const context = page.context(), browser = context.browser();
   if (!browser) throw new Error('source browser unavailable');
   await mkdir(request.asset_root, {recursive:true});
@@ -125,24 +130,25 @@ export async function captureSource(page: Page, request: SourceRequest) {
     await context.route('**/*', route => {
       const work=(async()=>{
         const req=route.request(), url=req.url();
-        if(++requests>300) transportError??=new Error('source request limit');
+        if(++requests>300) transportError??=new SourceRejected('source request limit');
         if(transportError||abort.signal.aborted||req.method()!=='GET'||!permitted(url,request.allowed_hosts)) return route.abort();
         if(active>=4) await new Promise<void>(resolve=>waiting.push(resolve));
         active++;
         try {
           if(transportError||abort.signal.aborted) return await route.abort();
           const response=await fetchResource(url,req.headers(),abort.signal,bytes=>{
-            totalBytes+=bytes;if(totalBytes>32*2**20) throw new Error('source response budget');
+            totalBytes+=bytes;if(totalBytes>32*2**20) throw new SourceRejected('source response budget');
           });
+          if([408,429].includes(response.status)||response.status>=500) throw new Error(`source HTTP ${response.status}`);
           const contentType=(response.headers['content-type']??'').split(';')[0].trim();
-          if(response.status>=300&&response.status<400) throw new Error('source redirect: use canonical URL');
+          if(response.status>=300&&response.status<400) throw new SourceRejected('source redirect: use canonical URL');
           if(response.status>=200&&response.status<300) {
             totalPixels+=await validateRaster(response.body,contentType,abort.signal);
-            if(totalPixels>64*2**20) throw new Error('source pixel budget');
+            if(totalPixels>64*2**20) throw new SourceRejected('source pixel budget');
             if(['stylesheet','font','image'].includes(req.resourceType())) {
-              if(!contentTypes.includes(contentType)) throw new Error('unsupported source asset type');
+              if(!contentTypes.includes(contentType)) throw new SourceRejected('unsupported source asset type');
               assetURLs.add(url);
-              if(assetURLs.size>128) throw new Error('source asset count limit');
+              if(assetURLs.size>128) throw new SourceRejected('source asset count limit');
               const asset={sha256:await saveAsset(request.asset_root,response.body),content_type:contentType};
               assets[url]=asset;
             }
@@ -158,7 +164,7 @@ export async function captureSource(page: Page, request: SourceRequest) {
     });
     await context.routeWebSocket('**/*', socket => socket.close());
     const response = await page.goto(request.url, {waitUntil:'load',timeout:15000}).catch(error=>{throw transportError??error;});
-    if (!response?.ok() || !permitted(page.url(), request.allowed_hosts)) throw new Error('source HTTP or redirect');
+    if (!response?.ok() || !permitted(page.url(), request.allowed_hosts)) throw new SourceRejected('source HTTP or redirect');
     await page.evaluate(async () => {await document.fonts.ready;});
     await page.waitForTimeout(1000);
     if(transportError) throw transportError;
@@ -181,7 +187,7 @@ export async function captureSource(page: Page, request: SourceRequest) {
       const base = document.createElement('base'); base.href = source; document.head.prepend(base);
     });
     if (!await page.evaluate(() => Array.from(document.images).every(image => image.complete && image.naturalWidth > 0))) {
-      throw new Error('missing source images');
+      throw new SourceRejected('missing source images');
     }
     let elements: Awaited<ReturnType<typeof annotations>> | undefined;
     let elementsStatus = 'captured';
@@ -190,9 +196,9 @@ export async function captureSource(page: Page, request: SourceRequest) {
       elementsStatus = 'node_limit';
     }
     const reference = await page.screenshot({animations:'disabled',caret:'hide',timeout:15000});
-    if (!reference.equals(await page.screenshot({animations:'disabled',caret:'hide',timeout:15000}))) throw new Error('unstable source pixels');
+    if (!reference.equals(await page.screenshot({animations:'disabled',caret:'hide',timeout:15000}))) throw new SourceRejected('unstable source pixels');
     const html = await page.content();
-    if (Buffer.byteLength(html) > 2_000_000) throw new Error('source HTML size limit');
+    if (Buffer.byteLength(html) > 2_000_000) throw new SourceRejected('source HTML size limit');
     const dpr = await page.evaluate(() => devicePixelRatio);
     offline = await browser.newContext({viewport,deviceScaleFactor:dpr,locale:'en-US',timezoneId:'UTC',
       colorScheme:'light',reducedMotion:'reduce',serviceWorkers:'block',javaScriptEnabled:false,acceptDownloads:false});
@@ -209,9 +215,9 @@ export async function captureSource(page: Page, request: SourceRequest) {
     await restored.evaluate(async () => {await document.fonts.ready;});
     const image = await restored.screenshot({animations:'disabled',caret:'hide',timeout:15000});
     if (blocked || !await restored.evaluate(() => Array.from(document.images).every(i => i.complete && i.naturalWidth > 0))) {
-      throw new Error('missing offline source assets');
+      throw new SourceRejected('missing offline source assets');
     }
-    if (!image.equals(reference)) throw new Error('offline pixels differ from source');
+    if (!image.equals(reference)) throw new SourceRejected('offline pixels differ from source');
     return {html,assets,elements,elements_status:elementsStatus,reference,
       scene_id:sha(html),source_url:request.url,final_url:page.url(),captured_at:new Date().toISOString(),
       source_sha256:sha(reference),restored_sha256:sha(image),defect_status:'unverified' as const,

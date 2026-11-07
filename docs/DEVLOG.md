@@ -38,3 +38,7 @@
 - GPU: 41 browser-тест и TypeScript прошли; точное воспроизведение через worker проверено. На React-сцене приняты 14 из 15 мутаций всех пяти типов; один no-op отклонён.
 - Проверка raster-заголовков вынесена для повторного использования при импорте и захвате. GPU: 31 тест pipeline и Ruff прошли.
 - Добавлен bounded-захват публичных демо с очисткой форм, optional elements и точным офлайн-replay. HTTP-редиректы отклоняются. GPU: 11 HTTPS-тестов и TypeScript прошли; независимое review завершено.
+- Добавлен `sources capture`: SQLite checkpoint, CAS, атомарные manifest и elements sidecars, дедупликация PNG. Operational errors сохраняют pending; retries отсутствуют.
+- GPU: 15 HTTPS-тестов, полный набор из 130 Python-тестов, TypeScript и Ruff прошли. Проверено восстановление аннотаций после прерванной записи.
+- Партия из шести публичных блоков: три точных офлайн-копии, три unstable rejection. Resume не изменил manifest и не запускал capture повторно.
+- Два блока прошли baseline: шесть clean-проверок и 24 принятые мутации; шесть unverified. Третий блок отклонён по baseline. Полный корпус не сформирован.

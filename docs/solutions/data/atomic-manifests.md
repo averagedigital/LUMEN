@@ -15,11 +15,15 @@ SQLite хранит checkpoint импорта; JSONL — его производ
 ## Solution
 Проверять бюджет при проекции, заменять manifest после flush/fsync, закрывать ресурсы независимо от результата cleanup.
 
+Именованные sidecar-файлы pending-сцены заменять атомарно до checkpoint. Не сохранять старую ссылку только потому, что файл существует.
+
 ## Why it works
 Незавершённая проекция не заменяет предыдущий manifest. Checkpoint остаётся доступен для resume.
 
 ## Verification
 Regression прерывает частично записанный manifest, проверяет предыдущий файл и повторный resume.
+
+Capture regression прерывает запись после sidecar, до checkpoint. После resume содержимое именованного файла совпадает с CAS digest в manifest.
 
 ## Prevention
 Проверять отдельно импорт и запись производных файлов.

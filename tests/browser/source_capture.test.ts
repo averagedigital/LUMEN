@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {createServer, type Server} from 'node:https';
 import {execFileSync} from 'node:child_process';
-import {captureSource} from '../../browser/source_capture.ts';
+import {captureSource, SourceRejected} from '../../browser/source_capture.ts';
 
 let browser: Browser;
 let certificates: string;
@@ -162,3 +162,16 @@ test('public source rejects more than 128 concurrent asset URLs',async()=>{
     await assert.rejects(captureSource(f.page,{url,allowed_hosts:['localhost'],asset_root:f.root}),/source asset count limit/);
   } finally {await f.close();}
 });
+
+for(const status of [429,503]) for(const resource of ['document','image']) {
+  test(`public source treats HTTP ${status} ${resource} as a recoverable operational failure`,async()=>{
+    const f=await fixture('<h1>Settings</h1><img src="/special-unavailable">',(_req,res)=>{
+      res.writeHead(status);res.end('temporarily unavailable');
+    });
+    try {
+      await assert.rejects(captureSource(f.page,{url:resource==='document'?'https://localhost/special-unavailable':url,
+        allowed_hosts:['localhost'],asset_root:f.root}),error=>error instanceof Error&&
+          !(error instanceof SourceRejected)&&error.message.includes(`HTTP ${status}`));
+    } finally {await f.close();}
+  });
+}

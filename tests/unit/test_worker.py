@@ -8,6 +8,31 @@ import pytest
 from lumen_data import pipeline
 
 
+def test_worker_uses_explicit_entry_and_deadline(tmp_path, monkeypatch):
+    entry = tmp_path / 'capture.ts'
+    entry.write_text('setInterval(() => {}, 1000);')
+    worker = pipeline.Worker(entry=str(entry), timeout=.1)
+    try:
+        with pytest.raises(RuntimeError, match='deadline'):
+            worker.request({'url': 'https://example.invalid'})
+    finally:
+        worker.process.kill()
+        worker.close()
+
+
+def test_source_worker_distinguishes_invalid_source_from_storage_failure():
+    worker = pipeline.Worker(entry='browser/source_worker.ts', timeout=75)
+    try:
+        bad_url = worker.request({'url': 'http://example.invalid', 'allowed_hosts': ['example.invalid'],
+                                  'asset_root': '/app/tests/.lumen-source-unwritable'})
+        assert bad_url['status'] == 'rejected'
+        storage = worker.request({'url': 'https://example.invalid', 'allowed_hosts': ['example.invalid'],
+                                  'asset_root': '/app/tests/.lumen-source-unwritable'})
+        assert storage['status'] == 'resource_error'
+    finally:
+        worker.close()
+
+
 @pytest.mark.parametrize('payload', [{'html': 'x' * 2_000_000}, {'html': 'small'}], ids=['blocked-write', 'blocked-read'])
 def test_worker_deadline_covers_sending_and_receiving(tmp_path, monkeypatch, payload):
     browser = tmp_path / 'browser'

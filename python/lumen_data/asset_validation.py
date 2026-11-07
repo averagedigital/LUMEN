@@ -47,4 +47,7 @@ if __name__ == '__main__':
     content = sys.stdin.buffer.read(8 * 2**20 + 1)
     if len(content) > 8 * 2**20:
         raise ValueError('source asset size limit')
-    print(raster_pixels(content, sys.argv[1]))
+    try:
+        print(raster_pixels(content, sys.argv[1]))
+    except ValueError:
+        sys.exit(2)
