@@ -229,13 +229,24 @@ def prepare(audit_path, source_id, root, max_shards=1, max_rows=None):
                     break
     finally:
         temporary_manifest = manifest.with_suffix('.part')
-        with temporary_manifest.open('w') as out:
-            for (record,) in db.execute('SELECT record FROM rows WHERE record IS NOT NULL ORDER BY shard,row_id'):
-                out.write(record + '\n')
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(temporary_manifest, manifest)
-        rejected = db.execute('SELECT count(*) FROM rows WHERE record IS NULL').fetchone()[0]
-        db.close()
-        lock.close()
+        try:
+            guard(root)
+            with temporary_manifest.open('w') as out:
+                rows = db.execute('SELECT record FROM rows WHERE record IS NOT NULL ORDER BY shard,row_id')
+                for index, (record,) in enumerate(rows):
+                    if index and index % 100 == 0:
+                        guard(root)
+                    out.write(record + '\n')
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(temporary_manifest, manifest)
+            rejected = db.execute('SELECT count(*) FROM rows WHERE record IS NULL').fetchone()[0]
+        finally:
+            try:
+                temporary_manifest.unlink(missing_ok=True)
+            finally:
+                try:
+                    db.close()
+                finally:
+                    lock.close()
     return {'imported': imported, 'rejected': rejected, 'manifest': str(manifest)}

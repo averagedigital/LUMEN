@@ -71,3 +71,33 @@ def test_source_import_resumes_after_download_failure(tmp_path, monkeypatch):
     again = sources.prepare(audit, 'websight', output)
     assert again['imported'] == 1
     assert len((output / 'manifest.jsonl').read_text().splitlines()) == 1
+
+
+def test_manifest_projection_stops_at_disk_reserve_and_preserves_previous_manifest(tmp_path, monkeypatch):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from lumen_data import sources
+
+    parquet = tmp_path / 'fixture.parquet'
+    pq.write_table(pa.Table.from_pylist([{'text': f'<h1>{i}</h1>'} for i in range(150)]), parquet)
+    monkeypatch.setattr(sources, 'download', lambda url, destination, max_bytes: shutil.copyfile(parquet, destination))
+    monkeypatch.setattr(sources, 'guard', lambda path: None)
+    audit, output = source_audit(tmp_path), tmp_path / 'output'
+    sources.prepare(audit, 'websight', output, max_rows=150)
+    previous = (output / 'manifest.jsonl').read_bytes()
+    checks = 0
+
+    def exhausted_during_projection(path):
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            assert (output / 'manifest.part').stat().st_size > 0
+            raise RuntimeError('disk reserve reached')
+
+    monkeypatch.setattr(sources, 'guard', exhausted_during_projection)
+    with pytest.raises(RuntimeError, match='disk reserve'):
+        sources.prepare(audit, 'websight', output, max_rows=150)
+    assert (output / 'manifest.jsonl').read_bytes() == previous
+    assert not (output / 'manifest.part').exists()
+    monkeypatch.setattr(sources, 'guard', lambda path: None)
+    assert sources.prepare(audit, 'websight', output, max_rows=150)['imported'] == 150
