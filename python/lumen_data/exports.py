@@ -2,6 +2,8 @@ import os
 import json
 from pathlib import Path
 import shutil
+from contextlib import nullcontext
+from PIL import Image
 
 from .contracts import Box, FAMILIES, canonical, validate_case
 from .storage import Store
@@ -42,9 +44,41 @@ def portable_objects(store, record):
     return objects
 
 
-def export_run(run, output, format_name, strict=False, public_safe=False):
+def tile_regions(record, size, overlap):
+    width, height = record['capture']['image_px']
+    axes = []
+    for length in (width, height):
+        last = max(0, length - size)
+        axes.append(sorted(set(range(0, last + 1, size - overlap)) | {last}))
+    if len(axes[0]) * len(axes[1]) > 256:
+        raise ValueError('tile count exceeds 256 per case')
+    regions, covered = [], set()
+    for y in axes[1]:
+        for x in axes[0]:
+            crop = [x, y, min(width, x + size), min(height, y + size)]
+            inside, partial = [], False
+            for i, issue in enumerate(record['issues']):
+                a, b, c, d = issue['bbox_xyxy_px']
+                if max(a, crop[0]) >= min(c, crop[2]) or max(b, crop[1]) >= min(d, crop[3]):
+                    continue
+                if not (x <= a < c <= crop[2] and y <= b < d <= crop[3]):
+                    partial = True
+                else:
+                    inside.append(i)
+            if not partial:
+                regions.append((crop, inside))
+                covered.update(inside)
+    if len(covered) != len(record['issues']):
+        raise ValueError(f'tile coverage incomplete for {record["case_id"]}; increase size or overlap')
+    return regions
+
+
+def export_run(run, output, format_name, strict=False, public_safe=False, tile_size=None, tile_overlap=128):
     if format_name not in ('yolo-singleclass', 'yolo-families', 'coco', 'diff-pairs', 'hf-local'):
         raise ValueError('unsupported export format')
+    if tile_size is not None and (not format_name.startswith('yolo') or type(tile_size) is not int
+                                 or type(tile_overlap) is not int or not 0 <= tile_overlap < tile_size):
+        raise ValueError('invalid tile configuration')
     store, output = Store(run), Path(output)
     store.db.execute('BEGIN')
     provenance = set()
@@ -54,29 +88,51 @@ def export_run(run, output, format_name, strict=False, public_safe=False):
     for record in store.records():
         validate_case(record, public_safe=public_safe)
         check_case_assets(store, record)
+        if tile_size is not None:
+            tile_regions(record, tile_size, tile_overlap)
         if format_name in ('diff-pairs', 'hf-local'):
             portable_objects(store, record)
         provenance.add((record['source_project_id'], record['provenance']['license'],
                         record['provenance'].get('public_release_status', 'unapproved')))
     output.mkdir(parents=True)
     count = 0
+    tile_count, background_tiles = 0, 0
     if format_name.startswith('yolo'):
         for split in ('train', 'val', 'test'):
             (output / 'images' / split).mkdir(parents=True)
             (output / 'labels' / split).mkdir(parents=True)
         names = ['ui_defect'] if format_name == 'yolo-singleclass' else list(FAMILIES)
-        for record in store.records():
-            key, split = record['case_id'], record['split']
-            link(store.path(record['assets']['current']), output / 'images' / split / f'{key}.png')
-            labels = output / 'labels' / split / f'{key}.txt'
-            labels.parent.mkdir(parents=True, exist_ok=True)
-            lines = []
-            for issue in record['issues']:
-                class_id = 0 if len(names) == 1 else FAMILIES.index(issue['family'])
-                coordinates = Box(*issue['bbox_xyxy_px']).yolo(*record['capture']['image_px'])
-                lines.append(str(class_id) + ' ' + ' '.join(f'{value:.9f}' for value in coordinates))
-            labels.write_text('\n'.join(lines) + ('\n' if lines else ''))
-            count += 1
+        with (output / 'tiles.jsonl').open('w') if tile_size else nullcontext() as manifest:
+            for record in store.records():
+                key, split = record['case_id'], record['split']
+                original = store.path(record['assets']['current'])
+                if tile_size:
+                    link(original, output / 'originals' / split / f'{key}.png')
+                    regions = tile_regions(record, tile_size, tile_overlap)
+                else:
+                    regions = [([0, 0, *record['capture']['image_px']], list(range(len(record['issues']))))]
+                with Image.open(original) if tile_size else nullcontext() as image:
+                    for crop, indices in regions:
+                        x, y, right, bottom = crop
+                        identity = f'{key}-{x}-{y}' if tile_size else key
+                        destination = output / 'images' / split / f'{identity}.png'
+                        if tile_size:
+                            guard(output)
+                            image.crop(crop).save(destination)
+                            manifest.write(canonical({'case_id': key, 'tile_id': identity,
+                                'split': split, 'crop_xyxy_px': crop, 'issue_indices': indices}) + '\n')
+                            tile_count += 1
+                            background_tiles += not indices
+                        else:
+                            link(original, destination)
+                        lines = []
+                        for index in indices:
+                            issue = record['issues'][index]
+                            class_id = 0 if len(names) == 1 else FAMILIES.index(issue['family'])
+                            coordinates = Box(*issue['bbox_xyxy_px']).transform(crop=(x, y)).yolo(right - x, bottom - y)
+                            lines.append(str(class_id) + ' ' + ' '.join(f'{value:.9f}' for value in coordinates))
+                        (output / 'labels' / split / f'{identity}.txt').write_text('\n'.join(lines) + ('\n' if lines else ''))
+                count += 1
         import yaml
         (output / 'data.yaml').write_text(yaml.safe_dump({'path': str(output.resolve()),
             'train': 'images/train', 'val': 'images/val', 'test': 'images/test',
@@ -136,6 +192,9 @@ def export_run(run, output, format_name, strict=False, public_safe=False):
             (output / 'README.md').write_text('# LUMEN\n\nSynthetic UI defects and visual changes. Automatically verified; not human-labelled.\n\n'
                 'Source licenses and release status:\n\n' + sources + '\n\n'
                 'Load manifest shards with the JSON datasets loader. File paths are relative to this directory.\n')
-    (output / 'export.json').write_text(canonical({'format': format_name, 'cases': count,
-                                                 'strict': strict, 'public_safe': public_safe}) + '\n')
-    return {'cases': count, 'output': str(output)}
+    report = {'format': format_name, 'cases': count, 'strict': strict, 'public_safe': public_safe}
+    if tile_size:
+        report.update(tiles=tile_count, background_tiles=background_tiles, tile_size=tile_size,
+                      tile_overlap=tile_overlap, partial_issue_policy='exclude_tile_require_full_coverage')
+    (output / 'export.json').write_text(canonical(report) + '\n')
+    return {**report, 'output': str(output)}
