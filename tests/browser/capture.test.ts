@@ -249,3 +249,29 @@ test('absent optional local font does not invalidate a source-declared system fa
     operator: 'clean', seed: 0, viewport: [800,600], dpr: 1});
   assert.equal(result.status, 'accepted_clean', JSON.stringify(result.evidence));
 });
+
+for (const clipping of ['clip:rect(0,0,0,0)', 'clip-path:inset(50%)']) {
+  test(`screen-reader-only labels are excluded from visual defects: ${clipping}`, async () => {
+    const page = `${html}<button aria-label="Change theme">☼<span style="position:absolute;width:1px;height:1px;overflow:hidden;white-space:nowrap;${clipping}"><span>Change theme</span></span></button>`;
+    const result = await captureCase(browser, {html:page,operator:'clean',seed:0,viewport:[800,600],dpr:1,annotations:true});
+    assert.equal(result.status, 'accepted_clean', JSON.stringify(result.evidence));
+    assert.equal(result.issues.length, 0);
+    assert.ok(result.elements?.some(element => element.accessible_name === 'Change theme'));
+  });
+}
+
+test('tiny clipped visible text remains an invalid baseline', async () => {
+  const result = await captureCase(browser, {html:`${html}<span style="display:block;width:1px;height:1px;overflow:hidden">Clipped text</span>`,
+    operator:'clean',seed:0,viewport:[800,600],dpr:1});
+  assert.equal(result.status, 'invalid_baseline');
+});
+
+test('screen-reader-only link revealed on focus is available to visual validation', async () => {
+  const page = await browser.newPage();
+  try {
+    await page.setContent('<style>a{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}a:focus{width:auto;height:auto;overflow:visible;clip-path:none}</style><a href="#content">Skip to content</a>');
+    assert.equal((await snapshot(page)).length, 0);
+    await page.locator('a').focus();
+    assert.ok((await snapshot(page)).some(state => state.text === 'Skip to content'));
+  } finally { await page.close(); }
+});

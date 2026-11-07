@@ -46,6 +46,9 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
       let viewportBound = false;
       for (let ancestor: HTMLElement | null = el; ancestor; ancestor = ancestor.parentElement) {
         const css = getComputedStyle(ancestor), r = ancestor.getBoundingClientRect();
+        if (['absolute', 'fixed'].includes(css.position) && r.width <= 1 && r.height <= 1 &&
+            css.overflowX === 'hidden' && css.overflowY === 'hidden' &&
+            (css.clip.replace(/[,\s]/g, '') === 'rect(0px0px0px0px)' || css.clipPath === 'inset(50%)')) return [];
         effectiveOpacity *= Number(css.opacity);
         viewportBound ||= ['fixed', 'sticky'].includes(css.position);
         if (['auto', 'scroll'].includes(css.overflowX) || ['auto', 'scroll'].includes(css.overflowY) ||
