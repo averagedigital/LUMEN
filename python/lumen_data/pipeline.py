@@ -27,6 +27,7 @@ ARCHETYPES = GRAMMAR_V2
 OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_partial_cutoff',
               'sibling_occlusion') * 2 + ('text_clip_x', 'text_clip_y') + ('clean',) * 5 +
              ('benign_theme', 'benign_action', 'benign_action'))
+REQUEST_TIMEOUT_SECONDS = 60
 
 
 class Worker:
@@ -36,11 +37,20 @@ class Worker:
             env['LUMEN_ASSET_ROOT'] = str(Path(asset_root).resolve())
         self.process = subprocess.Popen(['node', '--experimental-strip-types', 'browser/worker.ts'],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+        os.set_blocking(self.process.stdin.fileno(), False)
 
     def request(self, payload):
-        self.process.stdin.write((canonical(payload) + '\n').encode())
-        self.process.stdin.flush()
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
+        message = memoryview((canonical(payload) + '\n').encode())
+        sent = 0
+        while sent < len(message):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([], [self.process.stdin], [], remaining)[1]:
+                raise RuntimeError('browser worker deadline')
+            try:
+                sent += os.write(self.process.stdin.fileno(), message[sent:])
+            except BlockingIOError:
+                continue
         parts, size = [], 0
         while time.monotonic() < deadline:
             ready, _, _ = select.select([self.process.stdout], [], [], max(0, deadline - time.monotonic()))
