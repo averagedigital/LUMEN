@@ -21,10 +21,11 @@ export function validate(before: ElementState[], after: ElementState[], viewport
     }
     if (!symptom) continue;
     // Bound the visible symptom; vanished content cannot receive a single-frame box.
-    const x1 = Math.max(0, Math.min(r.x, state.rect.x) - 2);
-    const y1 = Math.max(0, Math.min(r.y, state.rect.y) - 2);
-    const x2 = Math.min(viewport[0], Math.max(r.x + r.width, state.rect.x + state.rect.width) + 2);
-    const y2 = Math.min(viewport[1], Math.max(r.y + r.height, state.rect.y + state.rect.height) + 2);
+    const clipped = symptom === 'text_clip_x' || symptom === 'text_clip_y';
+    const x1 = Math.max(0, (clipped ? Math.max(r.x, state.rect.x) : r.x) - 2);
+    const y1 = Math.max(0, (clipped ? Math.max(r.y, state.rect.y) : r.y) - 2);
+    const x2 = Math.min(viewport[0], (clipped ? Math.min(r.x + r.width, state.rect.x + state.rect.width) : r.x + r.width) + 2);
+    const y2 = Math.min(viewport[1], (clipped ? Math.min(r.y + r.height, state.rect.y + state.rect.height) : r.y + r.height) + 2);
     if (x2 <= x1 || y2 <= y1) continue;
     findings.push({id: state.id, symptom, family, bbox: imageBox({x: x1, y: y1, width: x2 - x1, height: y2 - y1}, dpr),
       evidence: {oracle_id: 'dom-text-v1', baseline_passed: true, after_failed: true,

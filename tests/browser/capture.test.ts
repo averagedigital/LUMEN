@@ -2,6 +2,10 @@ import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium, type Browser } from 'playwright';
 import { captureCase } from '../../browser/capture.ts';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 let browser: Browser;
 before(async () => { browser = await chromium.launch({ headless: true }); });
@@ -103,4 +107,33 @@ test('closed details content is not a visible occlusion defect', async () => {
   const page = html.replace('</body>', '<details><summary>Help</summary><p>Hidden help text should not be measured.</p></details></body>');
   const result = await captureCase(browser, {html: page, operator: 'clean', seed: 1, viewport: [800, 600], dpr: 1});
   assert.equal(result.status, 'accepted_clean');
+});
+
+test('vertical clipping box stays around text instead of the full block width', async () => {
+  const page = '<body style="margin:20px;background:white;color:black;font:20px Arial"><div style="width:700px;text-align:right"><span style="display:block;line-height:30px">Account settings</span></div></body>';
+  const result = await captureCase(browser, {html: page, operator: 'text_clip_y', seed: 0, viewport: [800,600], dpr: 1});
+  assert.equal(result.status, 'accepted_bug');
+  assert.ok(result.issues.every(issue => issue.bbox[2] - issue.bbox[0] < 250));
+});
+
+test('offline stylesheet is served only when its checksum matches', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'lumen-assets-'));
+  const previous = process.env.LUMEN_ASSET_ROOT;
+  process.env.LUMEN_ASSET_ROOT = root;
+  const css = 'body{background:white;color:black;font:20px Arial}';
+  const hash = createHash('sha256').update(css).digest('hex');
+  const url = 'https://example.invalid/style.css';
+  const request = {html: `<link rel="stylesheet" href="${url}"><h1>Account settings</h1>`,
+    operator: 'clean', seed: 0, viewport: [800,600] as [number,number], dpr: 1,
+    assets: {[url]: {sha256: hash, content_type: 'text/css'}}};
+  try {
+    await writeFile(join(root, hash), css);
+    assert.equal((await captureCase(browser, request)).status, 'accepted_clean');
+    await writeFile(join(root, hash), 'tampered');
+    assert.equal((await captureCase(browser, request)).status, 'invalid_baseline');
+  } finally {
+    if (previous === undefined) delete process.env.LUMEN_ASSET_ROOT;
+    else process.env.LUMEN_ASSET_ROOT = previous;
+    await rm(root, {recursive: true});
+  }
 });

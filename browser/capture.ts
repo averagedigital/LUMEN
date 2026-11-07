@@ -3,8 +3,12 @@ import { snapshot } from './snapshot.ts';
 import { apply, discover, OPERATORS, type Operator } from './mutations.ts';
 import { validate, type Finding } from './validate.ts';
 import { annotations } from './annotations.ts';
+import { readFile, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
-export type Request = { html: string; operator: string; seed: number; viewport: [number, number]; dpr: number; locale?: string; annotations?: boolean };
+export type Request = { html: string; operator: string; seed: number; viewport: [number, number]; dpr: number; locale?: string; annotations?: boolean;
+  assets?: Record<string, {sha256: string; content_type: string}> };
 export type CaptureResult = {
   status: string; issues: Finding[]; evidence?: unknown; reference?: string; current?: string;
   rollback?: boolean; receipt?: unknown; browser?: string; timings?: Record<string, number>;
@@ -32,7 +36,20 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     colorScheme: 'light', reducedMotion: 'reduce', serviceWorkers: 'block', javaScriptEnabled: false,
     acceptDownloads: false});
   const blocked: string[] = [];
-  await context.route('**/*', route => { blocked.push(new URL(route.request().url()).protocol); return route.abort(); });
+  await context.route('**/*', async route => {
+    const asset = request.assets?.[route.request().url()];
+    if (asset && process.env.LUMEN_ASSET_ROOT && /^[a-f0-9]{64}$/.test(asset.sha256) && asset.content_type === 'text/css') {
+      try {
+        const path = join(process.env.LUMEN_ASSET_ROOT, asset.sha256);
+        if ((await stat(path)).size > 8 * 1024 * 1024) throw new Error('asset size limit');
+        const body = await readFile(path);
+        if (createHash('sha256').update(body).digest('hex') !== asset.sha256) throw new Error('asset checksum');
+        return await route.fulfill({status: 200, contentType: asset.content_type, body});
+      } catch { blocked.push('invalid_local_asset'); return route.abort(); }
+    }
+    blocked.push(new URL(route.request().url()).protocol);
+    return route.abort();
+  });
   const deadline = setTimeout(() => { void context.close().catch(() => {}); }, 45000);
   try {
     const page = await context.newPage();
