@@ -32,6 +32,23 @@ def test_split_is_by_group_not_case():
     assert case_id({'seed': 3}) != case_id({'seed': 4})
 
 
+def test_fixed_grammar_catalog_has_disjoint_train_validation_test():
+    from collections import Counter
+    from lumen_data.pipeline import ARCHETYPES
+    groups = [f'lumen-grammar-v2/{family}' for family in ARCHETYPES]
+    assert Counter(group_split(group) for group in groups) == {'train': 18, 'val': 1, 'test': 1}
+    assert group_split('lumen-grammar-v1/admin') == 'val'
+    assert group_split('lumen-grammar-v1/media') == 'train'
+    assert {family: group_split(f'lumen-grammar-v2/{family}') for family in ARCHETYPES} == {
+        'dashboard': 'train', 'crm': 'train', 'admin': 'train', 'shop': 'train',
+        'product': 'train', 'checkout': 'train', 'settings': 'train', 'chat': 'val',
+        'inbox': 'train', 'calendar': 'test', 'kanban': 'train', 'docs': 'train',
+        'article': 'train', 'pricing': 'train', 'files': 'train', 'editor': 'train',
+        'spreadsheet': 'train', 'wizard': 'train', 'search': 'train', 'media': 'train'}
+    with pytest.raises(ValueError, match='unknown grammar group'):
+        group_split('lumen-grammar-v2/unknown')
+
+
 def test_strict_case_rejects_missing_or_incomplete_evidence():
     with pytest.raises(ValueError):
         validate_case({})

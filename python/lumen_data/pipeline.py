@@ -17,13 +17,11 @@ import numpy as np
 from PIL import Image
 import yaml
 
-from .contracts import Box, canonical, case_id, group_split, validate_case
+from .contracts import Box, canonical, case_id, group_split, validate_case, GRAMMAR_V2
 from .resource_guard import guard
 from .storage import Store
 
-ARCHETYPES = ('dashboard', 'crm', 'admin', 'shop', 'product', 'checkout', 'settings', 'chat',
-              'inbox', 'calendar', 'kanban', 'docs', 'article', 'pricing', 'files', 'editor',
-              'spreadsheet', 'wizard', 'search', 'media')
+ARCHETYPES = GRAMMAR_V2
 OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_partial_cutoff',
               'sibling_occlusion') * 2 + ('text_clip_x', 'text_clip_y') + ('clean',) * 5 +
              ('benign_theme', 'benign_action', 'benign_action'))
@@ -114,7 +112,7 @@ def build_record(payload, result, assets, stats):
     source = payload.get('source')
     scene_id = source['base_scene_id'] if source else case_id(payload['scene'])
     archetype = source['structural_family_id'] if source else payload['scene']['archetype']
-    group = source['template_lineage_id'] if source else f'lumen-grammar-v1/{archetype}'
+    group = source['template_lineage_id'] if source else f'lumen-grammar-v2/{archetype}'
     issues = []
     for index, finding in enumerate(result['issues']):
         box = Box(*finding['bbox'])

@@ -4,6 +4,10 @@ import json
 import math
 import re
 
+GRAMMAR_V2 = ('dashboard', 'crm', 'admin', 'shop', 'product', 'checkout', 'settings', 'chat',
+              'inbox', 'calendar', 'kanban', 'docs', 'article', 'pricing', 'files', 'editor',
+              'spreadsheet', 'wizard', 'search', 'media')
+
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)
@@ -14,6 +18,12 @@ def case_id(value):
 
 
 def group_split(group):
+    if group.startswith('lumen-grammar-v2/'):
+        family = group.removeprefix('lumen-grammar-v2/')
+        if family not in GRAMMAR_V2:
+            raise ValueError('unknown grammar group')
+        # Frozen SHA-ranked 18/1/1 assignment for this finite catalog.
+        return {'chat': 'val', 'calendar': 'test'}.get(family, 'train')
     bucket = int(case_id({'group': group})[:8], 16) % 100
     return 'train' if bucket < 90 else 'val' if bucket < 95 else 'test'
 
