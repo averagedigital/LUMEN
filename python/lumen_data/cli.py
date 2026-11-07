@@ -88,7 +88,7 @@ def main():
             if not row:
                 raise ValueError('unknown case')
             record = json.loads(row[0])
-            worker = Worker()
+            worker = Worker(store.root / 'assets')
             try:
                 replay = worker.request(worker_payload(store, record['recipe']))
                 digest = hashlib.sha256(base64.b64decode(replay['current'], validate=True)).hexdigest()

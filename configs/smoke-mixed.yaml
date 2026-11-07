@@ -4,4 +4,4 @@ max_attempts: 2000
 variants_per_scene: 10
 min_disk_gib: 40
 min_ram_gib: 1
-source_manifest: /data/sources/websight-renderable.jsonl
+source_manifest: /data/sources/websight-renderable-v2.jsonl

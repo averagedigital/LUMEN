@@ -30,9 +30,12 @@ OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_p
 
 
 class Worker:
-    def __init__(self):
+    def __init__(self, asset_root=None):
+        env = dict(os.environ)
+        if asset_root is not None:
+            env['LUMEN_ASSET_ROOT'] = str(Path(asset_root).resolve())
         self.process = subprocess.Popen(['node', '--experimental-strip-types', 'browser/worker.ts'],
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
 
     def request(self, payload):
         self.process.stdin.write((canonical(payload) + '\n').encode())
@@ -155,6 +158,23 @@ def register_sources(store, manifest):
             if store.db.execute('SELECT 1 FROM source_scenes WHERE scene_id=?', (scene_id,)).fetchone():
                 continue
             guard(store.root)
+            for asset in record.get('assets', {}).values():
+                digest = asset['sha256']
+                stored = store.path(digest, 'css')
+                if asset['content_type'] != 'text/css':
+                    raise ValueError('unsupported source asset')
+                if not stored.exists():
+                    original = Path(os.environ['LUMEN_ASSET_ROOT']) / digest
+                    if original.stat().st_size > 8 * 2**20:
+                        raise ValueError('source asset size limit')
+                    content = original.read_bytes()
+                    if hashlib.sha256(content).hexdigest() != digest:
+                        raise ValueError('source asset checksum')
+                    store.put(content, 'css')
+                target = store.root / 'assets' / digest
+                target.parent.mkdir(exist_ok=True)
+                if not target.exists():
+                    os.link(stored, target)
             record['html_hash'] = store.put(record.pop('html').encode(), 'html')
             with store.db:
                 store.db.execute('INSERT INTO source_scenes(scene_id,record) VALUES (?,?)',
@@ -187,7 +207,8 @@ def recipe(index, config, version):
     locale = ('en', 'ru', 'de', 'es', 'zh', 'ar')[entropy[0] % 6]
     width = (320, 360, 390, 414, 768, 1024, 1280, 1440, 1920)[entropy[1] % 9]
     operator_draw = int(case_id({'seed': config['seed'], 'index': index, 'draw': 'operator'})[:8], 16)
-    return {'scene': {'seed': config['seed'] + base, 'archetype': ARCHETYPES[base % 20],
+    family_index = base // 2 if config.get('source_manifest') else base
+    return {'scene': {'seed': config['seed'] + base, 'archetype': ARCHETYPES[family_index % 20],
                       'locale': locale, 'width': width}, 'seed': config['seed'] + index,
             'operator': OPERATORS[operator_draw % len(OPERATORS)], 'viewport': [width, 720 + entropy[2] % 4 * 80],
             'dpr': 1, 'locale': locale, 'generator_revision': version}
@@ -220,7 +241,7 @@ def generate(config_path, run, target=None, resume=False):
         register_sources(store, config['source_manifest'])
     started = time.monotonic()
     initial_count = store.count()
-    worker = Worker()
+    worker = Worker(store.root / 'assets')
     try:
         attempts = store.db.execute('SELECT count(*) FROM tasks').fetchone()[0]
         while store.count() < target:

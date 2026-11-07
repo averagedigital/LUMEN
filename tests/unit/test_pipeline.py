@@ -75,3 +75,25 @@ def test_source_registration_stops_before_next_write_at_disk_reserve(tmp_path, m
     with pytest.raises(RuntimeError, match='disk reserve'):
         register_sources(store, path)
     assert store.db.execute('SELECT count(*) FROM source_scenes').fetchone()[0] == 1
+
+
+def test_mixed_sources_keep_all_own_scene_families():
+    config = {'variants_per_scene': 10, 'seed': 123, 'source_manifest': 'prepared.jsonl'}
+    own = {recipe(base * 10, config, 'v1')['scene']['archetype'] for base in range(0, 80, 2)}
+    assert own == set(ARCHETYPES)
+
+
+def test_registered_source_retains_verified_stylesheet(tmp_path, monkeypatch):
+    import hashlib
+    store = Store(tmp_path / 'run')
+    source_assets = tmp_path / 'assets'
+    source_assets.mkdir()
+    css = b'body { color: black; }'
+    digest = hashlib.sha256(css).hexdigest()
+    (source_assets / digest).write_bytes(css)
+    monkeypatch.setenv('LUMEN_ASSET_ROOT', str(source_assets))
+    path = tmp_path / 'source.jsonl'
+    path.write_text(json.dumps({'base_scene_id': 'one', 'html': '<h1>Title</h1>',
+        'assets': {'https://example.invalid/style.css': {'sha256': digest, 'content_type': 'text/css'}}}) + '\n')
+    register_sources(store, path)
+    assert (store.root / 'assets' / digest).read_bytes() == css
