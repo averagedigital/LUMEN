@@ -18,6 +18,7 @@ HOSTS = {'huggingface.co', 'datasets-server.huggingface.co', 'cdn-lfs.huggingfac
          'cdn-lfs.hf.co', 'cas-bridge.xethub.hf.co', 'cdn-lfs-us-1.hf.co',
          'cdn-lfs-eu-1.hf.co', 'raw.githubusercontent.com', 'codeload.github.com'}
 HOSTS.add('us.aws.cdn.hf.co')
+HOSTS.add('cdn.jsdelivr.net')
 
 
 def validate_url(url):

@@ -108,9 +108,10 @@ def build_record(payload, result, assets, stats):
     if result.get('status') not in ('accepted_bug', 'accepted_clean', 'accepted_benign_change'):
         raise ValueError('unverified result')
     width, height = [v * payload['dpr'] for v in payload['viewport']]
-    scene_id = case_id(payload['scene'])
-    archetype = payload['scene']['archetype']
-    group = f'lumen-grammar-v1/{archetype}'
+    source = payload.get('source')
+    scene_id = source['base_scene_id'] if source else case_id(payload['scene'])
+    archetype = source['structural_family_id'] if source else payload['scene']['archetype']
+    group = source['template_lineage_id'] if source else f'lumen-grammar-v1/{archetype}'
     issues = []
     for index, finding in enumerate(result['issues']):
         box = Box(*finding['bbox'])
@@ -122,7 +123,7 @@ def build_record(payload, result, assets, stats):
                        'severity': 'unknown', 'evidence': finding['evidence']})
     record = {'schema_version': 'lumen.case.v1', 'case_id': case_id(payload),
               'base_scene_id': scene_id, 'scene_id': scene_id, 'template_lineage_id': group,
-              'source_project_id': 'lumen-grammar', 'structural_family_id': archetype,
+              'source_project_id': source['source_project_id'] if source else 'lumen-grammar', 'structural_family_id': archetype,
               'split_group': group, 'split': group_split(group), 'backend': 'browser',
               'seed': payload['seed'], 'recipe': payload, 'operator': payload['operator'],
               'capture': {'viewport_css': payload['viewport'], 'image_px': [width, height],
@@ -137,7 +138,35 @@ def build_record(payload, result, assets, stats):
                              'public_release_status': 'approved', 'origin': 'synthetic'},
               'metrics': stats, 'timings_ms': result.get('timings', {})}
     validate_case(record)
+    if source:
+        record['provenance'] = source['provenance']
+        validate_case(record)
     return record
+
+
+def register_sources(store, manifest):
+    store.db.execute('CREATE TABLE IF NOT EXISTS source_scenes(id INTEGER PRIMARY KEY, scene_id TEXT UNIQUE, record TEXT)')
+    with Path(manifest).open() as handle:
+        for line in handle:
+            if len(line) > 2_100_000:
+                raise ValueError('source row exceeds size limit')
+            record = json.loads(line)
+            scene_id = record['base_scene_id']
+            if store.db.execute('SELECT 1 FROM source_scenes WHERE scene_id=?', (scene_id,)).fetchone():
+                continue
+            guard(store.root)
+            record['html_hash'] = store.put(record.pop('html').encode(), 'html')
+            with store.db:
+                store.db.execute('INSERT INTO source_scenes(scene_id,record) VALUES (?,?)',
+                                 (scene_id, canonical(record)))
+
+
+def worker_payload(store, payload):
+    result = dict(payload)
+    if payload.get('source'):
+        result['html'] = store.read(payload['source']['html_hash'], 'html').decode()
+        result['assets'] = payload['source']['assets']
+    return result
 
 
 def revision():
@@ -171,8 +200,6 @@ def generate(config_path, run, target=None, resume=False):
     target = config['target'] if target is None else target
     if target <= 0 or config['max_attempts'] < target:
         raise ValueError('invalid target or attempt budget')
-    if config.get('source_manifest'):
-        raise ValueError('external scenes require validated local asset preparation')
     root = Path(run)
     root.mkdir(parents=True, exist_ok=True)
     lock = (root / 'scheduler.lock').open('a')
@@ -180,12 +207,17 @@ def generate(config_path, run, target=None, resume=False):
     store = Store(root)
     contract = {key: config[key] for key in ('seed', 'variants_per_scene', 'source_manifest')}
     contract['generator_revision'] = revision()
+    if config.get('source_manifest'):
+        with Path(config['source_manifest']).open('rb') as handle:
+            contract['source_manifest_sha256'] = hashlib.file_digest(handle, 'sha256').hexdigest()
     contract_file = root / 'run.json'
     if contract_file.exists():
         if not resume or json.loads(contract_file.read_text()) != contract:
             raise ValueError('run exists or generation contract changed')
     else:
         contract_file.write_text(canonical(contract) + '\n')
+    if config.get('source_manifest'):
+        register_sources(store, config['source_manifest'])
     started = time.monotonic()
     initial_count = store.count()
     worker = Worker()
@@ -201,11 +233,19 @@ def generate(config_path, run, target=None, resume=False):
                 if attempts >= config['max_attempts']:
                     break
                 payload = recipe(attempts, config, contract['generator_revision'])
+                base = attempts // config['variants_per_scene']
+                if config.get('source_manifest') and base % 2:
+                    row = store.db.execute('SELECT record FROM source_scenes ORDER BY id LIMIT 1 OFFSET ?', (base // 2,)).fetchone()
+                    if not row:
+                        raise RuntimeError('prepared source scenes exhausted')
+                    payload['source'] = json.loads(row[0])
+                    payload['scene'] = None
+                    payload['locale'] = 'en-US'
                 store.enqueue(case_id(payload), payload)
                 attempts += 1
                 task = store.claim()
             payload = task['payload']
-            result = worker.request(payload)
+            result = worker.request(worker_payload(store, payload))
             store.heartbeat(task['id'], task['token'])
             if not result['status'].startswith('accepted'):
                 evidence = result.get('evidence')
@@ -226,9 +266,13 @@ def generate(config_path, run, target=None, resume=False):
                    for b in (i['bbox_xyxy_px'] for i in record['issues'])):
                 store.finish(task['id'], task['token'], 'rejected', {'reason': 'no_local_visible_effect'})
                 continue
-            record['assets']['scene_html'] = store.put(result['scene']['html'].encode(), 'html')
-            scene_metadata = {k: v for k, v in result['scene'].items() if k != 'html'}
-            record['sidecars'] = {'scene': store.put(canonical(scene_metadata).encode(), 'json')}
+            if result.get('scene'):
+                record['assets']['scene_html'] = store.put(result['scene']['html'].encode(), 'html')
+                scene_metadata = {k: v for k, v in result['scene'].items() if k != 'html'}
+                record['sidecars'] = {'scene': store.put(canonical(scene_metadata).encode(), 'json')}
+            else:
+                record['assets']['scene_html'] = payload['source']['html_hash']
+                record['sidecars'] = {}
             if result.get('elements') is not None:
                 elements = [{k: v for k, v in element.items() if k != 'state'} for element in result['elements']]
                 states = {element['element_id']: element['state'] for element in result['elements']}

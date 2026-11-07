@@ -6,6 +6,8 @@ from PIL import Image
 
 from lumen_data.pipeline import build_record, image_artifacts
 from lumen_data.pipeline import recipe, ARCHETYPES
+from lumen_data.pipeline import register_sources, worker_payload
+import json
 from lumen_data.storage import Store
 
 
@@ -42,3 +44,34 @@ def test_scene_family_does_not_determine_positive_or_negative(variants):
         payload = recipe(index, {'variants_per_scene': variants, 'seed': 123}, 'v1')
         classes[payload['scene']['archetype']].add(payload['operator'].startswith(('clean', 'benign')))
     assert all(values == {True, False} for values in classes.values())
+
+
+def test_prepared_source_html_is_shared_and_resume_does_not_duplicate(tmp_path):
+    store = Store(tmp_path / 'run')
+    path = tmp_path / 'source.jsonl'
+    path.write_text(json.dumps({'base_scene_id': 'source-one', 'html': '<h1>Account</h1>', 'assets': {}}) + '\n')
+    register_sources(store, path)
+    register_sources(store, path)
+    rows = store.db.execute('SELECT record FROM source_scenes').fetchall()
+    assert len(rows) == 1
+    source = json.loads(rows[0][0])
+    assert 'html' not in source
+    request = worker_payload(store, {'source': source, 'scene': None})
+    assert request['html'] == '<h1>Account</h1>'
+
+
+def test_source_registration_stops_before_next_write_at_disk_reserve(tmp_path, monkeypatch):
+    from lumen_data import pipeline
+    store = Store(tmp_path / 'run')
+    path = tmp_path / 'source.jsonl'
+    path.write_text(''.join(json.dumps({'base_scene_id': str(i), 'html': '<p>Text</p>'}) + '\n' for i in range(3)))
+
+    def guard(root):
+        assert root == store.root
+        if store.db.execute('SELECT count(*) FROM source_scenes').fetchone()[0] == 1:
+            raise RuntimeError('disk reserve reached')
+
+    monkeypatch.setattr(pipeline, 'guard', guard)
+    with pytest.raises(RuntimeError, match='disk reserve'):
+        register_sources(store, path)
+    assert store.db.execute('SELECT count(*) FROM source_scenes').fetchone()[0] == 1

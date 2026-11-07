@@ -1,0 +1,7 @@
+seed: 20261110
+target: 200
+max_attempts: 2000
+variants_per_scene: 10
+min_disk_gib: 40
+min_ram_gib: 1
+source_manifest: /data/sources/websight-renderable.jsonl

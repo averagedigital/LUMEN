@@ -7,7 +7,7 @@ import sys
 
 from .contracts import canonical
 from .exports import export_run
-from .pipeline import Worker, generate, qa
+from .pipeline import Worker, generate, qa, worker_payload
 from .resource_guard import resources
 from .sources import audit, prepare
 from .storage import Store
@@ -27,6 +27,10 @@ def main():
     source_prepare.add_argument('--output', required=True)
     source_prepare.add_argument('--max-shards', type=int, default=1)
     source_prepare.add_argument('--max-rows', type=int)
+    renderable = sources.add_parser('renderable')
+    renderable.add_argument('--manifest', required=True)
+    renderable.add_argument('--output', required=True)
+    renderable.add_argument('--assets', required=True)
     plan = commands.add_parser('plan')
     plan.add_argument('--config', required=True)
     generate_command = commands.add_parser('generate')
@@ -54,8 +58,11 @@ def main():
         elif args.command == 'sources':
             if args.source_command == 'audit':
                 result = audit(args.registry, args.output)
-            else:
+            elif args.source_command == 'prepare':
                 result = prepare(args.audit, args.source, args.output, args.max_shards, args.max_rows)
+            else:
+                from .renderable import prepare_renderable
+                result = prepare_renderable(args.manifest, args.output, args.assets)
         elif args.command == 'plan':
             import yaml
             config = yaml.safe_load(Path(args.config).read_text())
@@ -83,7 +90,7 @@ def main():
             record = json.loads(row[0])
             worker = Worker()
             try:
-                replay = worker.request(record['recipe'])
+                replay = worker.request(worker_payload(store, record['recipe']))
                 digest = hashlib.sha256(base64.b64decode(replay['current'], validate=True)).hexdigest()
                 if digest != record['assets']['current']:
                     raise ValueError('reproduction hash mismatch')
