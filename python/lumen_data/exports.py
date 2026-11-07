@@ -1,18 +1,42 @@
 import os
+import json
 from pathlib import Path
 import shutil
 
 from .contracts import Box, FAMILIES, canonical, validate_case
 from .storage import Store
 from .pipeline import check_case_assets
+from .resource_guard import guard
 
 
 def link(source, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
+    guard(destination.parent)
     if os.stat(source).st_dev != os.stat(destination.parent).st_dev:
         shutil.copyfile(source, destination)
     else:
         os.link(source, destination)
+
+
+def portable_objects(store, record):
+    objects = [(name, digest, 'json', f'annotations/{name}/{digest}.json')
+               for name, digest in record.get('sidecars', {}).items()]
+    if record['assets'].get('scene_html'):
+        digest = record['assets']['scene_html']
+        objects.append(('scene_html', digest, 'html', f'scenes/{digest}.html'))
+    if record.get('sidecars', {}).get('states'):
+        state = json.loads(store.read(record['sidecars']['states'], 'json'))
+        if state.get('baseline'):
+            digest = state['baseline']
+            objects.append(('states_baseline', digest, 'json', f'annotations/states/{digest}.json'))
+    for asset in (record.get('recipe', {}).get('source') or {}).get('assets', {}).values():
+        digest = asset['sha256']
+        objects.append((f'css_{digest}', digest, 'css', f'assets/{digest}'))
+    for name, digest, suffix, relative in objects:
+        if not name.replace('_', '').isalnum():
+            raise ValueError('invalid sidecar name')
+        store.read(digest, suffix)
+    return objects
 
 
 def export_run(run, output, format_name, strict=False, public_safe=False):
@@ -20,12 +44,17 @@ def export_run(run, output, format_name, strict=False, public_safe=False):
         raise ValueError('unsupported export format')
     store, output = Store(run), Path(output)
     store.db.execute('BEGIN')
+    provenance = set()
     if output.exists():
         raise ValueError('export destination already exists')
     # Validate the entire selection before creating any training labels.
     for record in store.records():
         validate_case(record, public_safe=public_safe)
         check_case_assets(store, record)
+        if format_name in ('diff-pairs', 'hf-local'):
+            portable_objects(store, record)
+        provenance.add((record['source_project_id'], record['provenance']['license'],
+                        record['provenance'].get('public_release_status', 'unapproved')))
     output.mkdir(parents=True)
     count = 0
     if format_name.startswith('yolo'):
@@ -88,13 +117,22 @@ def export_run(run, output, format_name, strict=False, public_safe=False):
                     if not destination.exists():
                         link(store.path(record['assets'][name]), destination)
                     item['files'][name] = relative
+                for name, digest, suffix, relative in portable_objects(store, record):
+                    source = store.path(digest, suffix)
+                    if not (output / relative).exists():
+                        link(source, output / relative)
+                    item['files'][name] = relative
                 handle.write(canonical(item) + '\n')
                 count += 1
         finally:
             if handle:
                 handle.close()
         if format_name == 'hf-local':
-            (output / 'README.md').write_text('---\nlicense: mit\ntask_categories:\n- object-detection\n---\n# LUMEN\n\nSynthetic UI defects and visual changes. Automatically verified; not human-labelled.\n\nLoad manifest shards with the JSON datasets loader. Image paths are relative to this directory.\n')
+            sources = '\n'.join(f'- {source}: {license_name}; {status}.'
+                                for source, license_name, status in sorted(provenance))
+            (output / 'README.md').write_text('# LUMEN\n\nSynthetic UI defects and visual changes. Automatically verified; not human-labelled.\n\n'
+                'Source licenses and release status:\n\n' + sources + '\n\n'
+                'Load manifest shards with the JSON datasets loader. File paths are relative to this directory.\n')
     (output / 'export.json').write_text(canonical({'format': format_name, 'cases': count,
                                                  'strict': strict, 'public_safe': public_safe}) + '\n')
     return {'cases': count, 'output': str(output)}
