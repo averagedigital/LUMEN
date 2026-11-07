@@ -1,0 +1,23 @@
+name: CI
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  python:
+    uses: averagedigital/cicd_templates/.github/workflows/python-check.yml@main
+    with:
+      python-version: '3.11'
+      test-command: uv run ruff check python tests/unit && uv run pytest
+  browser:
+    uses: averagedigital/cicd_templates/.github/workflows/node-check.yml@main
+    with:
+      node-version: '22'
+      check-command: npx playwright install --with-deps chromium && npm run check && npm test
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan history
+        run: docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:v8.24.3 git /repo --redact --no-banner
