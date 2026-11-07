@@ -1,5 +1,6 @@
 import base64
 from collections import Counter
+from contextlib import closing
 import fcntl
 import hashlib
 import io
@@ -10,6 +11,7 @@ import resource
 import select
 import sqlite3
 import subprocess
+import tempfile
 import time
 
 import cv2
@@ -91,6 +93,8 @@ def check_case_assets(store, record):
         x1, y1, x2, y2 = issue['bbox_xyxy_px']
         if np.count_nonzero(actual[int(y1):int(np.ceil(y2)), int(x1):int(np.ceil(x2))]) < 8:
             raise ValueError('issue has no local visible change')
+    gray = cv2.resize(cv2.cvtColor(before, cv2.COLOR_RGB2GRAY), (9, 8), interpolation=cv2.INTER_AREA)
+    return np.packbits(gray[:, 1:] > gray[:, :-1]).tobytes().hex()
 
 
 def image_artifacts(store, reference, current, image_px):
@@ -279,6 +283,8 @@ def generate(config_path, run, target=None, resume=False):
             if not result['status'].startswith('accepted'):
                 evidence = result.get('evidence')
                 detail = evidence.get('reason') if isinstance(evidence, dict) else None
+                if detail is None and result.get('error'):
+                    detail = result['error']
                 store.finish(task['id'], task['token'], 'rejected', {'reason': result['status'],
                     'detail': detail, 'operator': payload['operator']})
                 if result['status'] == 'resource_error':
@@ -340,12 +346,27 @@ def generate(config_path, run, target=None, resume=False):
 
 def qa(run):
     store = Store(run)
+    with tempfile.TemporaryDirectory(prefix='.qa-', dir=store.root) as scratch, closing(store.db):
+        guard(store.root)
+        store.db.execute('ATTACH DATABASE ? AS qa_work', (str(Path(scratch) / 'index.sqlite'),))
+        return audit_cases(store)
+
+
+def audit_cases(store):
+    store.db.execute('PRAGMA temp_store=FILE')
     store.db.execute('BEGIN')
+    store.db.execute('CREATE TABLE qa_work.signatures(reference TEXT, scene TEXT, split TEXT, signature TEXT, UNIQUE(reference,scene,split))')
     counters = {key: Counter() for key in ('operators', 'families', 'sources', 'splits', 'locales', 'viewports', 'rejections')}
+    defect_families, bbox_sizes, issue_counts = Counter(), Counter(), Counter()
     positives = 0
-    for record in store.records():
+    for index, record in enumerate(store.records()):
+        if index % 100 == 0:
+            guard(store.root)
+            guard(tempfile.gettempdir())
         validate_case(record)
-        check_case_assets(store, record)
+        signature = check_case_assets(store, record)
+        store.db.execute('INSERT OR IGNORE INTO qa_work.signatures VALUES (?,?,?,?)',
+            (record['assets']['reference'], record['base_scene_id'], record['split'], signature))
         counters['operators'][record['operator']] += 1
         counters['families'][record['structural_family_id']] += 1
         counters['sources'][record['source_project_id']] += 1
@@ -353,11 +374,32 @@ def qa(run):
         counters['locales'][record['capture']['locale']] += 1
         counters['viewports'][str(record['capture']['image_px'])] += 1
         positives += record['has_single_frame_defect']
+        issue_counts[str(len(record['issues']))] += 1
+        width, height = record['capture']['image_px']
+        for issue in record['issues']:
+            defect_families[issue['family']] += 1
+            a, b, c, d = issue['bbox_xyxy_px']
+            fraction = (c - a) * (d - b) / (width * height)
+            bbox_sizes['tiny' if fraction < .001 else 'small' if fraction < .01 else 'medium' if fraction < .1 else 'large'] += 1
+    guard(store.root)
+    guard(tempfile.gettempdir())
+    leakage = store.db.execute('SELECT count(*) FROM (SELECT reference FROM qa_work.signatures GROUP BY reference HAVING count(DISTINCT split)>1)').fetchone()[0]
+    if leakage:
+        raise ValueError(f'baseline split leakage: {leakage} images')
+    missing = {'train', 'val', 'test'} - counters['splits'].keys()
+    if missing:
+        raise ValueError(f'missing dataset splits: {sorted(missing)}')
+    near, cross = store.db.execute('''SELECT count(*), coalesce(sum(cross_split),0) FROM (
+        SELECT signature,count(DISTINCT split)>1 AS cross_split FROM qa_work.signatures
+        GROUP BY signature HAVING count(DISTINCT scene)>1)''').fetchone()
     for (value,) in store.db.execute("SELECT result FROM tasks WHERE status='rejected'"):
         counters['rejections'][json.loads(value)['reason']] += 1
     stats = {**counters, 'accepted_cases': store.count(), 'positives': positives,
              'negatives': store.count() - positives,
              'base_scenes': store.db.execute("SELECT count(DISTINCT json_extract(record,'$.base_scene_id')) FROM cases").fetchone()[0],
+             'defect_families': defect_families, 'bbox_area_bins': bbox_sizes, 'issues_per_case': issue_counts,
+             'near_duplicate_baseline_clusters': near, 'cross_split_near_duplicate_clusters': cross,
+             'similarity_method': 'equal_dhash64_candidates_not_confirmed_duplicates',
              'human_verified': 0, 'qa': 'passed'}
     (store.root / 'qa.json').write_text(canonical(stats) + '\n')
     return stats

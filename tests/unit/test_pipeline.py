@@ -97,3 +97,28 @@ def test_registered_source_retains_verified_stylesheet(tmp_path, monkeypatch):
         'assets': {'https://example.invalid/style.css': {'sha256': digest, 'content_type': 'text/css'}}}) + '\n')
     register_sources(store, path)
     assert (store.root / 'assets' / digest).read_bytes() == css
+
+
+def test_fatal_worker_error_is_preserved_in_checkpoint(tmp_path, monkeypatch):
+    from lumen_data import pipeline
+    import yaml
+
+    class FailedWorker:
+        def __init__(self, asset_root):
+            pass
+
+        def request(self, payload):
+            return {'status': 'resource_error', 'issues': [], 'error': 'browser process exited'}
+
+        def close(self):
+            pass
+
+    config = tmp_path / 'config.yaml'
+    config.write_text(yaml.safe_dump({'seed': 1, 'target': 1, 'max_attempts': 1,
+        'variants_per_scene': 1, 'source_manifest': None, 'min_disk_gib': 0, 'min_ram_gib': 0}))
+    monkeypatch.setattr(pipeline, 'Worker', FailedWorker)
+    with pytest.raises(RuntimeError, match='resource_error'):
+        pipeline.generate(config, tmp_path / 'run')
+    store = Store(tmp_path / 'run')
+    result = json.loads(store.db.execute('SELECT result FROM tasks').fetchone()[0])
+    assert result['detail'] == 'browser process exited'
