@@ -1,0 +1,83 @@
+import test, { after, before } from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium, type Browser } from 'playwright';
+import { captureCase } from '../../browser/capture.ts';
+
+let browser: Browser;
+before(async () => { browser = await chromium.launch({ headless: true }); });
+after(async () => { await browser.close(); });
+
+const html = `<html><head><style>
+body{margin:24px;background:#fff;color:#17212b;font:18px Arial}
+button{display:block;margin:20px 0;padding:12px;border:1px solid #333;background:#fff;color:#17212b}
+.label{display:block;white-space:nowrap;width:max-content;line-height:28px}
+</style></head><body><h1>Account settings</h1>
+<button><span class="label" data-lumen="a">Save account settings</span></button>
+<button><span class="label" data-lumen="b">Review notifications</span></button></body></html>`;
+
+for (const operator of ['text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_partial_cutoff', 'sibling_occlusion']) {
+  test(`${operator} has independently verified visible effect and rollback`, async () => {
+    const result = await captureCase(browser, {html, operator, seed: 42, viewport: [800, 600], dpr: 1});
+    assert.equal(result.status, 'accepted_bug', JSON.stringify(result.evidence));
+    assert.ok(result.issues.length > 0);
+    assert.equal(result.rollback, true);
+    assert.notEqual(result.reference, result.current);
+    const again = await captureCase(browser, {html, operator, seed: 42, viewport: [800, 600], dpr: 1});
+    assert.equal(result.current, again.current);
+  });
+}
+
+test('clean and benign changes carry no defect boxes', async () => {
+  for (const operator of ['clean', 'benign_theme']) {
+    const result = await captureCase(browser, {html, operator, seed: 8, viewport: [800, 600], dpr: 1});
+    assert.equal(result.status, operator === 'clean' ? 'accepted_clean' : 'accepted_benign_change');
+    assert.deepEqual(result.issues, []);
+  }
+});
+
+test('unavailable target is rejected instead of becoming a negative', async () => {
+  const result = await captureCase(browser, {html: '<html><body></body></html>', operator: 'text_clip_y', seed: 1, viewport: [390, 800], dpr: 1});
+  assert.equal(result.status, 'inapplicable');
+});
+
+test('intended ellipsis and scrolling are excluded from clipping candidates', async () => {
+  const page = html.replace('<h1>Account settings</h1>', '')
+    .replace('width:max-content', 'width:80px;overflow:hidden;text-overflow:ellipsis');
+  const result = await captureCase(browser, {html: page, operator: 'text_clip_x', seed: 1, viewport: [390, 800], dpr: 1});
+  assert.equal(result.status, 'inapplicable');
+});
+
+for (const text of ['Сохранить настройки', '保存账户设置', 'حفظ إعدادات الحساب']) {
+  test(`mobile DPR 2 capture: ${text}`, async () => {
+    const page = html.replace('Save account settings', text).replace('Review notifications', text);
+    const result = await captureCase(browser, {html: page, operator: 'text_clip_y', seed: 5, viewport: [390, 800], dpr: 2});
+    assert.equal(result.status, 'accepted_bug');
+    for (const issue of result.issues) {
+      assert.ok(issue.bbox[0] >= 0 && issue.bbox[2] <= 780);
+      assert.ok(issue.bbox[1] >= 0 && issue.bbox[3] <= 1600);
+    }
+  });
+}
+
+test('unavailable external image is an invalid baseline', async () => {
+  const result = await captureCase(browser, {html: html.replace('</body>', '<img src="https://example.invalid/private.png"></body>'), operator: 'clean', seed: 1, viewport: [800, 600], dpr: 1});
+  assert.equal(result.status, 'invalid_baseline');
+});
+
+test('partially cut off baseline text is never a clean negative', async () => {
+  const page = html.replace('</body>', '<p style="position:fixed;left:760px;top:300px;white-space:nowrap">Important account details</p></body>');
+  const result = await captureCase(browser, {html: page, operator: 'clean', seed: 1, viewport: [800, 600], dpr: 1});
+  assert.equal(result.status, 'invalid_baseline');
+});
+
+test('pointer-events none does not make opaque overlays visually transparent', async () => {
+  const page = html.replace('</body>', '<div style="position:fixed;inset:0;background:white;pointer-events:none;z-index:100"></div></body>');
+  const result = await captureCase(browser, {html: page, operator: 'clean', seed: 1, viewport: [800, 600], dpr: 1});
+  assert.ok(!result.status.startsWith('accepted'));
+});
+
+test('invisible ancestor text cannot produce an accepted defect on empty pixels', async () => {
+  const page = '<body style="background:white"><div style="opacity:0"><span style="display:block;line-height:30px">Hidden account information</span></div><p>Visible account information</p></body>';
+  const result = await captureCase(browser, {html: page, operator: 'text_clip_y', seed: 0, viewport: [800, 600], dpr: 1});
+  if (result.status === 'accepted_bug') assert.ok(result.issues.every(issue => issue.id !== '0'));
+});
