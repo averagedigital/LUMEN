@@ -1,4 +1,6 @@
 from contextlib import suppress
+import base64
+import hashlib
 import threading
 
 import pytest
@@ -26,3 +28,27 @@ def test_worker_deadline_covers_sending_and_receiving(tmp_path, monkeypatch, pay
             worker.close()
         worker.process.wait()
         worker.process.stdout.close()
+
+
+def test_mutated_rounded_scene_replays_with_identical_pixels():
+    payload = {'scene': {'archetype': 'crm', 'locale': 'en', 'seed': 20261110, 'width': 1280},
+        'seed': 20261132, 'operator': 'text_contrast_failure', 'viewport': [1280, 960],
+        'dpr': 1, 'locale': 'en'}
+    worker = pipeline.Worker()
+    expected = None
+    try:
+        for _ in range(20):
+            result = worker.request(payload)
+            assert result['status'] == 'accepted_bug'
+            assert any(issue['symptom'] == payload['operator'] for issue in result['issues'])
+            hashes = []
+            for key in ('reference', 'current'):
+                content = base64.b64decode(result[key], validate=True)
+                pipeline.decode_image(content, payload['viewport'])
+                hashes.append(hashlib.sha256(content).hexdigest())
+            observed = (hashes, result['issues'])
+            if expected is None:
+                expected = observed
+            assert observed == expected, 'identical recipe changed pixels or labels'
+    finally:
+        worker.close()

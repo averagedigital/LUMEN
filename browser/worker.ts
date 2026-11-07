@@ -3,7 +3,7 @@ import { chromium } from 'playwright';
 import { captureCase } from './capture.ts';
 import { buildScene } from '../scenes/grammar.ts';
 
-const browser = await chromium.launch({headless: true});
+const browser = await chromium.launch({headless: true, args: ['--disable-partial-raster']});
 try {
   for await (const line of createInterface({input: process.stdin, crlfDelay: Infinity})) {
     try {
