@@ -78,3 +78,11 @@ def test_context_crop_contains_issue():
     record['issues'][0]['context_bbox_xyxy_px'] = [100, 50, 200, 100]
     with pytest.raises(ValueError, match='context'):
         validate_case(record)
+
+
+@pytest.mark.parametrize('identity', ['../outside', '/absolute', '', 'g' * 64])
+def test_case_identity_is_safe_for_export_paths(identity):
+    record = valid_case()
+    record['case_id'] = identity
+    with pytest.raises(ValueError, match='case_id'):
+        validate_case(record)

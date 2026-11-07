@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
+import re
 
 
 def canonical(value):
@@ -73,6 +74,8 @@ def validate_case(record, public_safe=False):
         raise ValueError(f'missing fields: {sorted(required - record.keys())}')
     if record['schema_version'] != 'lumen.case.v1':
         raise ValueError('unsupported schema')
+    if not isinstance(record['case_id'], str) or not re.fullmatch('[a-f0-9]{64}', record['case_id']):
+        raise ValueError('invalid case_id')
     if record['split'] != group_split(record['split_group']):
         raise ValueError('group split mismatch')
     if record['annotation_completeness'] != 'complete_within_declared_scope':
