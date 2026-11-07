@@ -6,17 +6,22 @@ export const OPERATORS = ['text_clip_x', 'text_clip_y', 'text_contrast_failure',
 export type Operator = typeof OPERATORS[number];
 export type Receipt = { operator: string; target: string; params: Record<string, unknown> };
 
+function occluder(states: ElementState[], target: ElementState) {
+  return states.find(s => s.id !== target.id && s.fullyInViewport && s.hitRatio > .95 && !s.intentional && s.background);
+}
+
 export function discover(states: ElementState[], operator: string): ElementState[] {
   return states.filter(s => !s.intentional && s.fullyInViewport && s.visibleRatio > .99 &&
     s.hitRatio > .95 && s.rect.width > 40 && s.rect.height > 12 &&
-    (operator !== 'text_contrast_failure' || (s.contrast !== null && s.contrast >= 4.5 && s.background !== null)));
+    (operator !== 'text_contrast_failure' || (s.contrast !== null && s.contrast >= 4.5 && s.background !== null)) &&
+    (operator !== 'sibling_occlusion' || Boolean(occluder(states, s))));
 }
 
 export async function apply(page: Page, operator: Operator, target: ElementState, states: ElementState[], seed: number): Promise<Receipt> {
   const ratio = [.45, .6, .7][seed % 3];
   const params: Record<string, unknown> = {ratio};
   if (operator === 'sibling_occlusion') {
-    const other = states.find(s => s.id !== target.id && s.fullyInViewport && s.hitRatio > .95 && !s.intentional && s.background);
+    const other = occluder(states, target);
     if (!other) throw new Error('inapplicable: second element');
     params.other = other.id;
     params.background = other.background;

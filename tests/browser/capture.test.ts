@@ -44,6 +44,13 @@ test('unavailable target is rejected instead of becoming a negative', async () =
   assert.equal(result.status, 'inapplicable');
 });
 
+test('occlusion without a second visible element is inapplicable', async () => {
+  const result = await captureCase(browser, {html: '<body style="background:white;color:black"><h1>Only heading</h1></body>',
+    operator: 'sibling_occlusion', seed: 1, viewport: [800, 600], dpr: 1});
+  assert.equal(result.status, 'inapplicable');
+  assert.deepEqual(result.issues, []);
+});
+
 test('intended ellipsis and scrolling are excluded from clipping candidates', async () => {
   const page = html.replace('<h1>Account settings</h1>', '')
     .replace('width:max-content', 'width:80px;overflow:hidden;text-overflow:ellipsis');
