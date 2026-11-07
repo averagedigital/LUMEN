@@ -192,3 +192,60 @@ test('offline stylesheet is served only when its checksum matches', async () => 
     await rm(root, {recursive: true});
   }
 });
+
+test('offline image contributes pixels and rejects corruption or unsupported MIME', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'lumen-image-'));
+  const previous = process.env.LUMEN_ASSET_ROOT;
+  process.env.LUMEN_ASSET_ROOT = root;
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="red"/></svg>';
+  const hash = createHash('sha256').update(svg).digest('hex');
+  const url = 'https://example.invalid/image.svg';
+  const request = {html: `<body style="background:white;color:black;font:20px Arial"><h1>Account settings</h1><img src="${url}" width="80" height="80"></body>`,
+    operator: 'clean', seed: 0, viewport: [800,600] as [number,number], dpr: 1,
+    assets: {[url]: {sha256: hash, content_type: 'image/svg+xml'}}};
+  try {
+    await writeFile(join(root, hash), svg);
+    const result = await captureCase(browser, request);
+    assert.equal(result.status, 'accepted_clean', JSON.stringify(result.evidence));
+    const withoutImage = await captureCase(browser, {...request, html: request.html.replace(/<img[^>]+>/, '')});
+    assert.equal(withoutImage.status, 'accepted_clean');
+    assert.notEqual(result.current, withoutImage.current);
+    assert.equal((await captureCase(browser, {...request,
+      assets: {[url]: {sha256: hash, content_type: 'text/html'}}})).status, 'invalid_baseline');
+    await writeFile(join(root, hash), 'tampered');
+    assert.equal((await captureCase(browser, request)).status, 'invalid_baseline');
+  } finally {
+    if (previous === undefined) delete process.env.LUMEN_ASSET_ROOT;
+    else process.env.LUMEN_ASSET_ROOT = previous;
+    await rm(root, {recursive: true});
+  }
+});
+
+test('undecodable checksummed font cannot produce an accepted fallback baseline', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'lumen-font-'));
+  const previous = process.env.LUMEN_ASSET_ROOT;
+  process.env.LUMEN_ASSET_ROOT = root;
+  const body = Buffer.from('not a font');
+  const hash = createHash('sha256').update(body).digest('hex');
+  const url = 'https://example.invalid/font.woff2';
+  try {
+    await writeFile(join(root, hash), body);
+    const result = await captureCase(browser, {
+      html: `<style>@font-face{font-family:Test;src:url('${url}') format('woff2')}body{background:white;color:black;font:20px Test,Arial}</style><h1>Account settings</h1>`,
+      operator: 'clean', seed: 0, viewport: [800,600], dpr: 1,
+      assets: {[url]: {sha256: hash, content_type: 'font/woff2'}}});
+    assert.equal(result.status, 'invalid_baseline');
+    assert.deepEqual(result.evidence, {reason: 'invalid_font'});
+  } finally {
+    if (previous === undefined) delete process.env.LUMEN_ASSET_ROOT;
+    else process.env.LUMEN_ASSET_ROOT = previous;
+    await rm(root, {recursive: true});
+  }
+});
+
+test('absent optional local font does not invalidate a source-declared system fallback', async () => {
+  const result = await captureCase(browser, {
+    html: '<style>@font-face{font-family:Optional;src:local("LumenDefinitelyMissingFont")}body{background:white;color:black;font:20px Optional,Arial}</style><h1>Account settings</h1>',
+    operator: 'clean', seed: 0, viewport: [800,600], dpr: 1});
+  assert.equal(result.status, 'accepted_clean', JSON.stringify(result.evidence));
+});

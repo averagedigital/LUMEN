@@ -5,7 +5,7 @@ import shutil
 from contextlib import nullcontext
 from PIL import Image
 
-from .contracts import Box, FAMILIES, canonical, validate_case
+from .contracts import Box, FAMILIES, canonical, validate_case, asset_suffix
 from .storage import Store
 from .pipeline import check_case_assets
 from .resource_guard import guard
@@ -33,7 +33,8 @@ def portable_objects(store, record):
             objects.append(('states_baseline', digest, 'json', f'annotations/states/{digest}.json'))
     for asset in (record.get('recipe', {}).get('source') or {}).get('assets', {}).values():
         digest = asset['sha256']
-        objects.append((f'css_{digest}', digest, 'css', f'assets/{digest}'))
+        suffix = asset_suffix(asset['content_type'])
+        objects.append((f'{suffix}_{digest}', digest, suffix, f'assets/{digest}'))
         if asset.get('license_sha256'):
             digest = asset['license_sha256']
             objects.append((f'license_{digest}', digest, 'txt', f'licenses/{digest}.txt'))

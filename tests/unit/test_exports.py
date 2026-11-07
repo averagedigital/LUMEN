@@ -64,7 +64,9 @@ def test_strict_export_rejects_positive_with_unchanged_pixels(tmp_path):
 
 
 @pytest.mark.parametrize('format_name', ['diff-pairs', 'hf-local'])
-def test_portable_export_contains_sidecars_baseline_and_scene(tmp_path, format_name):
+@pytest.mark.parametrize('content_type,suffix', [('text/css', 'css'), ('font/woff2', 'woff2'),
+    ('image/jpeg', 'jpg'), ('image/png', 'png'), ('image/svg+xml', 'svg'), ('image/webp', 'webp')])
+def test_portable_export_contains_sidecars_baseline_and_scene(tmp_path, format_name, content_type, suffix):
     store = Store(tmp_path / 'run')
     record = valid_case()
     record['has_change'] = record['has_single_frame_defect'] = False
@@ -77,10 +79,10 @@ def test_portable_export_contains_sidecars_baseline_and_scene(tmp_path, format_n
     record['sidecars'] = {'states': store.put(json.dumps({'schema_version': 'lumen.state-delta.v1',
         'baseline': baseline, 'delta': {}}).encode(), 'json'),
         'elements': store.put(b'{"schema_version":"lumen.elements.v1","elements":[]}', 'json')}
-    css = store.put(b'body {color: black;}', 'css')
+    css = store.put(b'body {color: black;}', suffix)
     notice = store.put(b'MIT License\nCopyright example\nPermission notice', 'txt')
     record['recipe'] = {'source': {'assets': {'https://example.invalid/style.css': {
-        'sha256': css, 'content_type': 'text/css', 'license_sha256': notice}}}}
+        'sha256': css, 'content_type': content_type, 'license_sha256': notice}}}}
     record['provenance'].update(license='cc-by-4.0', public_release_status='research_only')
     accepted(store, record)
     output = tmp_path / 'out'
@@ -91,7 +93,7 @@ def test_portable_export_contains_sidecars_baseline_and_scene(tmp_path, format_n
     state = json.loads((output / item['files']['states']).read_text())
     assert state['baseline'] == baseline
     assert json.loads((output / item['files']['states_baseline']).read_text())['elements'] == {}
-    assert (output / item['files'][f'css_{css}']).read_bytes() == b'body {color: black;}'
+    assert (output / item['files'][f'{suffix}_{css}']).read_bytes() == b'body {color: black;}'
     assert (output / item['files'][f'license_{notice}']).read_bytes().startswith(b'MIT License')
     if format_name == 'hf-local':
         card = (output / 'README.md').read_text()

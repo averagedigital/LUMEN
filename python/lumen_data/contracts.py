@@ -9,6 +9,14 @@ GRAMMAR_V2 = ('dashboard', 'crm', 'admin', 'shop', 'product', 'checkout', 'setti
               'spreadsheet', 'wizard', 'search', 'media')
 
 
+def asset_suffix(content_type):
+    suffix = {'text/css': 'css', 'font/woff2': 'woff2', 'image/jpeg': 'jpg',
+              'image/png': 'png', 'image/svg+xml': 'svg', 'image/webp': 'webp'}.get(content_type)
+    if suffix is None:
+        raise ValueError('unsupported source asset')
+    return suffix
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)
 

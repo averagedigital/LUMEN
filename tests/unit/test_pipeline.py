@@ -83,20 +83,130 @@ def test_mixed_sources_keep_all_own_scene_families():
     assert own == set(ARCHETYPES)
 
 
-def test_registered_source_retains_verified_stylesheet(tmp_path, monkeypatch):
+@pytest.mark.parametrize('content_type,suffix,options', [
+    ('text/css', 'css', {}), ('font/woff2', 'woff2', {}), ('image/jpeg', 'jpg', {}),
+    ('image/png', 'png', {}), ('image/svg+xml', 'svg', {}), ('image/webp', 'webp', {}),
+    ('image/webp', 'webp', {'lossless': True}), ('image/webp', 'webp', {'icc_profile': b'test'})])
+def test_registered_source_retains_verified_asset(tmp_path, monkeypatch, content_type, suffix, options):
     import hashlib
     store = Store(tmp_path / 'run')
     source_assets = tmp_path / 'assets'
     source_assets.mkdir()
-    css = b'body { color: black; }'
-    digest = hashlib.sha256(css).hexdigest()
-    (source_assets / digest).write_bytes(css)
+    content = b'body { color: black; }'
+    if suffix in ('jpg', 'png', 'webp'):
+        stream = io.BytesIO()
+        Image.new('RGB', (2, 2), 'red').save(stream,
+            format={'jpg': 'JPEG', 'png': 'PNG', 'webp': 'WEBP'}[suffix], **options)
+        content = stream.getvalue()
+    digest = hashlib.sha256(content).hexdigest()
+    (source_assets / digest).write_bytes(content)
     monkeypatch.setenv('LUMEN_ASSET_ROOT', str(source_assets))
     path = tmp_path / 'source.jsonl'
     path.write_text(json.dumps({'base_scene_id': 'one', 'html': '<h1>Title</h1>',
-        'assets': {'https://example.invalid/style.css': {'sha256': digest, 'content_type': 'text/css'}}}) + '\n')
+        'assets': {'https://example.invalid/asset': {'sha256': digest, 'content_type': content_type}}}) + '\n')
     register_sources(store, path)
-    assert (store.root / 'assets' / digest).read_bytes() == css
+    assert (store.root / 'assets' / digest).read_bytes() == content
+    assert store.read(digest, suffix) == content
+
+
+@pytest.mark.parametrize('content_type,content,error', [
+    ('text/html', b'original', 'unsupported source asset'),
+    ('image/svg+xml', b'tampered', 'source asset checksum')])
+def test_source_asset_rejected_before_scene_registration(tmp_path, monkeypatch, content_type, content, error):
+    import hashlib
+    store = Store(tmp_path / 'run')
+    digest = hashlib.sha256(b'original').hexdigest()
+    (tmp_path / digest).write_bytes(content)
+    monkeypatch.setenv('LUMEN_ASSET_ROOT', str(tmp_path))
+    manifest = tmp_path / 'source.jsonl'
+    manifest.write_text(json.dumps({'base_scene_id': 'one', 'html': '<h1>Title</h1>',
+        'assets': {'https://example.invalid/asset': {'sha256': digest, 'content_type': content_type}}}) + '\n')
+    with pytest.raises(ValueError, match=error):
+        register_sources(store, manifest)
+    assert store.db.execute('SELECT count(*) FROM source_scenes').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('kind', ['oversized', 'animated', 'wrong_format'])
+def test_raster_source_rejected_before_browser_decode(tmp_path, monkeypatch, kind):
+    import hashlib
+    import struct
+    import zlib
+    stream = io.BytesIO()
+    first = Image.new('RGB', (2, 2), 'red')
+    first.save(stream, format='PNG', save_all=True, append_images=[Image.new('RGB', (2, 2), 'blue')]
+               if kind == 'animated' else [])
+    content = stream.getvalue()
+    if kind == 'oversized':
+        # Change only IHDR: the rejection must not allocate the declared bitmap.
+        header = b'IHDR' + struct.pack('>II', 5000, 5000) + content[24:29]
+        content = content[:12] + header + struct.pack('>I', zlib.crc32(header)) + content[33:]
+        with Image.open(io.BytesIO(content)) as image:
+            assert image.size == (5000, 5000)
+    digest = hashlib.sha256(content).hexdigest()
+    (tmp_path / digest).write_bytes(content)
+    monkeypatch.setenv('LUMEN_ASSET_ROOT', str(tmp_path))
+    store = Store(tmp_path / 'run')
+    path = tmp_path / 'source.jsonl'
+    path.write_text(json.dumps({'base_scene_id': 'one', 'html': '<h1>Title</h1>',
+        'assets': {'https://example.invalid/image': {'sha256': digest,
+            'content_type': 'image/jpeg' if kind == 'wrong_format' else 'image/png'}}}) + '\n')
+    with pytest.raises(ValueError, match='source raster'):
+        register_sources(store, path)
+    assert store.db.execute('SELECT count(*) FROM source_scenes').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('kind', ['count', 'bytes', 'pixels'])
+def test_source_asset_aggregate_budget(tmp_path, monkeypatch, kind):
+    import hashlib
+    import struct
+    import zlib
+    content = b' ' * (8 * 2**20) if kind == 'bytes' else png(np.zeros((2, 2, 3), np.uint8))
+    if kind == 'pixels':
+        header = b'IHDR' + struct.pack('>II', 4096, 4096) + content[24:29]
+        content = content[:12] + header + struct.pack('>I', zlib.crc32(header)) + content[33:]
+        with Image.open(io.BytesIO(content)) as image:
+            assert image.size == (4096, 4096)
+    digest = hashlib.sha256(content).hexdigest()
+    (tmp_path / digest).write_bytes(content)
+    monkeypatch.setenv('LUMEN_ASSET_ROOT', str(tmp_path))
+    store = Store(tmp_path / 'run')
+    path = tmp_path / 'source.jsonl'
+    assets = {f'https://example.invalid/{i}': {'sha256': digest,
+        'content_type': 'image/png' if kind == 'pixels' else 'text/css'}
+        for i in range(129 if kind == 'count' else 5)}
+    path.write_text(json.dumps({'base_scene_id': 'one', 'html': '<h1>Title</h1>', 'assets': assets}) + '\n')
+    with pytest.raises(ValueError, match='source asset budget'):
+        register_sources(store, path)
+    assert store.db.execute('SELECT count(*) FROM source_scenes').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('chunk,mime', [('VP8 ', 'image/webp'), ('VP8L', 'image/webp'),
+    ('VP8X', 'image/webp'), ('VP8X', 'image/png')])
+def test_oversized_webp_rejected_before_decoder_allocation(tmp_path, monkeypatch, chunk, mime):
+    import hashlib
+    import struct
+    from PIL import WebPImagePlugin
+    width = height = 5000
+    payloads = {
+        'VP8 ': b'\x00\x00\x00\x9d\x01\x2a' + struct.pack('<HH', width, height),
+        'VP8L': b'\x2f' + struct.pack('<I', (width - 1) | ((height - 1) << 14)),
+        'VP8X': b'\x00' * 4 + (width - 1).to_bytes(3, 'little') + (height - 1).to_bytes(3, 'little')}
+    payload = payloads[chunk]
+    body = b'WEBP' + chunk.encode() + struct.pack('<I', len(payload)) + payload + b'\x00' * (len(payload) % 2)
+    content = b'RIFF' + struct.pack('<I', len(body)) + body
+    digest = hashlib.sha256(content).hexdigest()
+    (tmp_path / digest).write_bytes(content)
+    monkeypatch.setenv('LUMEN_ASSET_ROOT', str(tmp_path))
+    def forbidden_decoder(*args):
+        raise AssertionError('oversized WebP reached decoder allocation')
+    monkeypatch.setattr(WebPImagePlugin._webp, 'WebPAnimDecoder', forbidden_decoder)
+    store = Store(tmp_path / 'run')
+    path = tmp_path / 'source.jsonl'
+    path.write_text(json.dumps({'base_scene_id': 'one', 'html': '<h1>Title</h1>',
+        'assets': {'https://example.invalid/image': {'sha256': digest, 'content_type': mime}}}) + '\n')
+    with pytest.raises(ValueError, match='source raster'):
+        register_sources(store, path)
+    assert store.db.execute('SELECT count(*) FROM source_scenes').fetchone()[0] == 0
 
 
 def test_fatal_worker_error_is_preserved_in_checkpoint(tmp_path, monkeypatch):

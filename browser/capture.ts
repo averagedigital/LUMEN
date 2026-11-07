@@ -36,15 +36,19 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     colorScheme: 'light', reducedMotion: 'reduce', serviceWorkers: 'block', javaScriptEnabled: false,
     acceptDownloads: false});
   const blocked: string[] = [];
+  const fonts = new Map<string, Buffer>();
   await context.route('**/*', async route => {
     const asset = request.assets?.[route.request().url()];
-    if (asset && process.env.LUMEN_ASSET_ROOT && /^[a-f0-9]{64}$/.test(asset.sha256) && asset.content_type === 'text/css') {
+    if (asset && process.env.LUMEN_ASSET_ROOT && /^[a-f0-9]{64}$/.test(asset.sha256) &&
+        ['text/css', 'font/woff2', 'image/jpeg', 'image/png', 'image/svg+xml', 'image/webp'].includes(asset.content_type)) {
       try {
         const path = join(process.env.LUMEN_ASSET_ROOT, asset.sha256);
         if ((await stat(path)).size > 8 * 1024 * 1024) throw new Error('asset size limit');
         const body = await readFile(path);
         if (createHash('sha256').update(body).digest('hex') !== asset.sha256) throw new Error('asset checksum');
-        return await route.fulfill({status: 200, contentType: asset.content_type, body});
+        if (asset.content_type === 'font/woff2') fonts.set(asset.sha256, body);
+        return await route.fulfill({status: 200, contentType: asset.content_type,
+          headers: {'access-control-allow-origin': '*'}, body});
       } catch { blocked.push('invalid_local_asset'); return route.abort(); }
     }
     blocked.push(new URL(route.request().url()).protocol);
@@ -56,6 +60,15 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     page.setDefaultTimeout(15000);
     await page.setContent(html, {waitUntil: 'load', timeout: 15000});
     await page.evaluate(async () => { await document.fonts.ready; });
+    for (const body of fonts.values()) {
+      const valid = await page.evaluate(async encoded => {
+        try {
+          await new FontFace('LumenAssetCheck', Uint8Array.from(atob(encoded), c => c.charCodeAt(0))).load();
+          return true;
+        } catch { return false; }
+      }, body.toString('base64'));
+      if (!valid) return {status: 'invalid_baseline', issues: [], evidence: {reason: 'invalid_font'}};
+    }
     await page.evaluate(() => {
       const style = document.createElement('style');
       style.textContent = '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}';
