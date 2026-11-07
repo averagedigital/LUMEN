@@ -23,6 +23,7 @@ import yaml
 from .contracts import Box, canonical, case_id, group_split, validate_case, GRAMMAR_V2, asset_suffix
 from .resource_guard import guard
 from .storage import Store
+from .asset_validation import raster_pixels
 
 ARCHETYPES = GRAMMAR_V2
 OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_partial_cutoff',
@@ -160,26 +161,6 @@ def build_record(payload, result, assets, stats):
     return record
 
 
-def webp_dimensions(content):
-    # Pillow allocates WebP canvases during open(), before exposing their dimensions.
-    if (len(content) < 25 or content[:4] != b'RIFF' or content[8:12] != b'WEBP'
-            or int.from_bytes(content[4:8], 'little') != len(content) - 8):
-        raise ValueError('source raster WebP header')
-    chunk = content[12:16]
-    if chunk == b'VP8X' and len(content) >= 30:
-        if content[20] & 2:
-            raise ValueError('source raster animation')
-        return (1 + int.from_bytes(content[24:27], 'little'),
-                1 + int.from_bytes(content[27:30], 'little'))
-    if chunk == b'VP8L' and content[20] == 0x2f:
-        packed = int.from_bytes(content[21:25], 'little')
-        return (1 + (packed & 0x3fff), 1 + ((packed >> 14) & 0x3fff))
-    if chunk == b'VP8 ' and len(content) >= 30 and content[23:26] == b'\x9d\x01\x2a':
-        return (int.from_bytes(content[26:28], 'little') & 0x3fff,
-                int.from_bytes(content[28:30], 'little') & 0x3fff)
-    raise ValueError('source raster WebP header')
-
-
 def register_sources(store, manifest):
     store.db.execute('CREATE TABLE IF NOT EXISTS source_scenes(id INTEGER PRIMARY KEY, scene_id TEXT UNIQUE, record TEXT)')
     with Path(manifest).open() as handle:
@@ -193,7 +174,7 @@ def register_sources(store, manifest):
             guard(store.root)
             if len(record.get('assets', {})) > 128:
                 raise ValueError('source asset budget: count')
-            asset_bytes, raster_pixels = 0, 0
+            asset_bytes, raster_pixel_count = 0, 0
             for asset in record.get('assets', {}).values():
                 digest = asset['sha256']
                 suffix = asset_suffix(asset['content_type'])
@@ -208,23 +189,10 @@ def register_sources(store, manifest):
                 content = original.read_bytes()
                 if hashlib.sha256(content).hexdigest() != digest:
                     raise ValueError('source asset checksum')
-                if suffix in ('jpg', 'png', 'webp'):
-                    try:
-                        if suffix == 'webp':
-                            width, height = webp_dimensions(content)
-                            if not 0 < width * height <= 16_777_216:
-                                raise ValueError('source raster dimensions')
-                        expected_format = {'jpg': 'JPEG', 'png': 'PNG', 'webp': 'WEBP'}[suffix]
-                        with Image.open(io.BytesIO(content), formats=[expected_format]) as image:
-                            pixels = image.width * image.height
-                            if (image.format != {'jpg': 'JPEG', 'png': 'PNG', 'webp': 'WEBP'}[suffix]
-                                    or pixels > 16_777_216 or (suffix != 'jpg' and image.n_frames != 1)):
-                                raise ValueError('source raster dimensions, frames or format')
-                            raster_pixels += pixels
-                            if raster_pixels > 64 * 2**20:
-                                raise ValueError('source asset budget: pixels')
-                    except (OSError, Image.DecompressionBombError) as error:
-                        raise ValueError('source raster header') from error
+                total_pixels = raster_pixels(content, suffix)
+                raster_pixel_count += total_pixels
+                if raster_pixel_count > 64 * 2**20:
+                    raise ValueError('source asset budget: pixels')
                 if not stored.exists():
                     store.put(content, suffix)
                 target = store.root / 'assets' / digest
