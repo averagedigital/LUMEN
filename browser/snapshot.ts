@@ -11,7 +11,11 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
   return page.evaluate(() => {
     const rect = (r: DOMRect): {x: number; y: number; width: number; height: number} =>
       ({x: r.x, y: r.y, width: r.width, height: r.height});
-    const rgb = (s: string) => s.match(/[\d.]+/g)?.map(Number) ?? [];
+    const rgb = (s: string) => {
+      if (!/^(rgba?\(|color\(srgb )/.test(s)) return [];
+      const values = s.match(/[-+]?(?:\d*\.)?\d+(?:e[-+]?\d+)?/gi)?.map(Number) ?? [];
+      return s.startsWith('color(') ? values.map((v, i) => i < 3 ? Math.max(0, Math.min(1, v)) * 255 : v) : values;
+    };
     const luminance = (v: number[]) => v.slice(0, 3).reduce((sum, c, i) => {
       const n = c / 255;
       return sum + (n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4) * [.2126, .7152, .0722][i];
@@ -57,6 +61,7 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
         if (background === null) {
           if (css.backgroundImage !== 'none' || Number(css.opacity) < 1) backgroundComplex = true;
           const color = rgb(css.backgroundColor);
+          if (!color.length) backgroundComplex = true;
           if (color.length === 3 || color[3] === 1) background = css.backgroundColor;
           else if (color[3] > 0) backgroundComplex = true;
         }

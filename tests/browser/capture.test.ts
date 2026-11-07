@@ -6,6 +6,8 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { snapshot } from '../../browser/snapshot.ts';
+import { apply, discover } from '../../browser/mutations.ts';
 
 let browser: Browser;
 before(async () => { browser = await chromium.launch({ headless: true }); });
@@ -49,6 +51,45 @@ test('occlusion without a second visible element is inapplicable', async () => {
     operator: 'sibling_occlusion', seed: 1, viewport: [800, 600], dpr: 1});
   assert.equal(result.status, 'inapplicable');
   assert.deepEqual(result.issues, []);
+});
+
+for (const [foreground, background] of [['#17212b', '#f8fafc'], ['#f8fafc', '#152520']]) {
+  test(`contrast mutation preserves the scene background ${background}`, async () => {
+    const page = await browser.newPage({viewport: {width: 800, height: 600}});
+    try {
+      await page.setContent(`<body style="background:${background};color:${foreground}"><h1>Account settings</h1></body>`);
+      const before = await snapshot(page);
+      const target = discover(before, 'text_contrast_failure')[0];
+      assert.ok(target);
+      const original = await page.locator('h1').evaluate(el => getComputedStyle(el).backgroundColor);
+      await apply(page, 'text_contrast_failure', target, before, 42);
+      assert.equal(await page.locator('h1').evaluate(el => getComputedStyle(el).backgroundColor), original);
+      const after = (await snapshot(page)).find(el => el.id === target.id)!;
+      assert.ok(after.contrast !== null && after.contrast < 2);
+    } finally { await page.close(); }
+  });
+}
+
+test('sRGB computed colors use normalized channels for contrast', async () => {
+  const page = await browser.newPage();
+  try {
+    await page.setContent('<body style="background:color(srgb 1 1 1);color:color(srgb 0 0 0)"><h1>Account settings</h1></body>');
+    const states = await snapshot(page);
+    assert.equal(states[0].contrast, 21);
+  } finally { await page.close(); }
+});
+
+test('horizontal clipping does not move inline text onto another line', async () => {
+  const page = await browser.newPage();
+  try {
+    await page.setContent('<body style="background:white;color:black"><p><span>Project one</span> <span data-element-id="target">Ready for review</span></p></body>');
+    const before = await snapshot(page);
+    const target = before.find(el => el.id === 'target')!;
+    await apply(page, 'text_clip_x', target, before, 42);
+    const after = (await snapshot(page)).find(el => el.id === 'target')!;
+    assert.ok(Math.abs(after.textRect.y - target.textRect.y) < 1);
+    assert.ok(after.visibleRatio < .85);
+  } finally { await page.close(); }
 });
 
 test('intended ellipsis and scrolling are excluded from clipping candidates', async () => {

@@ -20,6 +20,7 @@ export function discover(states: ElementState[], operator: string): ElementState
 export async function apply(page: Page, operator: Operator, target: ElementState, states: ElementState[], seed: number): Promise<Receipt> {
   const ratio = [.45, .6, .7][seed % 3];
   const params: Record<string, unknown> = {ratio};
+  if (operator === 'text_contrast_failure') params.foregroundPercent = 8 + seed % 3 * 4;
   if (operator === 'sibling_occlusion') {
     const other = occluder(states, target);
     if (!other) throw new Error('inapplicable: second element');
@@ -30,13 +31,13 @@ export async function apply(page: Page, operator: Operator, target: ElementState
     const el = document.querySelector<HTMLElement>(`[data-lumen-id="${target.id}"]`)!;
     const ratio = Number(params.ratio);
     if (operator === 'text_clip_x' || operator === 'text_clip_y') {
-      Object.assign(el.style, {display: 'block', overflow: 'hidden', whiteSpace: 'nowrap',
+      const display = getComputedStyle(el).display;
+      Object.assign(el.style, {display: display === 'inline' ? 'inline-block' : display, overflow: 'hidden', whiteSpace: 'nowrap',
         boxSizing: 'border-box', minWidth: '0', minHeight: '0', flexShrink: '0'});
       if (operator === 'text_clip_x') el.style.width = `${target.textRect.width * ratio}px`;
       else el.style.height = `${target.textRect.height * ratio}px`;
     } else if (operator === 'text_contrast_failure') {
-      el.style.color = '#c5c5c5';
-      el.style.backgroundColor = '#d8d8d8';
+      el.style.color = `color-mix(in srgb, ${getComputedStyle(el).color} ${params.foregroundPercent}%, ${target.background})`;
     } else if (operator === 'viewport_partial_cutoff') {
       Object.assign(el.style, {position: 'fixed', left: `${innerWidth - target.textRect.width * ratio}px`,
         top: `${target.rect.y}px`, width: `${target.rect.width}px`, zIndex: '10', whiteSpace: 'nowrap'});
