@@ -300,3 +300,23 @@ test('wide-gamut neutral colors retain contrast while translucent colors stay un
     }
   } finally { await page.close(); }
 });
+
+test('visible labels in a scrolling application remain eligible for text mutations',async()=>{
+  const scrolling=html.replace('<body>','<body style="height:500px;overflow:auto">');
+  for(const operator of ['clean','text_clip_x','text_contrast_failure']){
+    const result=await captureCase(browser,{html:scrolling,operator,seed:42,viewport:[800,600],dpr:1});
+    assert.equal(result.status,operator==='clean'?'accepted_clean':'accepted_bug',JSON.stringify(result.evidence));
+    assert.equal(result.rollback,true);
+  }
+});
+
+test('text actually clipped by a scrollport remains an intentional negative',async()=>{
+  const page=await browser.newPage({viewport:{width:800,height:600}});
+  try{
+    await page.setContent('<style>body{background:white;color:black;font:18px Arial}section{width:80px;overflow:auto}span{white-space:nowrap}</style><section><span>Long scrollable label content</span></section>');
+    const states=await snapshot(page);
+    assert.ok(states.length);
+    assert.ok(states.every(s=>s.intentional));
+    assert.deepEqual(discover(states,'text_clip_x'),[]);
+  }finally{await page.close();}
+});

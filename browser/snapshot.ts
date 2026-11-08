@@ -71,8 +71,11 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
         effectiveOpacity *= Number(css.opacity);
         viewportBound ||= ['fixed', 'sticky'].includes(css.position);
         if (skipClipUntil === undefined) {
-          if (['auto', 'scroll'].includes(css.overflowX) || ['auto', 'scroll'].includes(css.overflowY) ||
-              css.textOverflow === 'ellipsis' || (css.webkitLineClamp !== 'none' && css.webkitLineClamp !== '0')) intentional = true;
+          const scrollClipsX=['auto','scroll'].includes(css.overflowX)&&
+            (textBounds.left<r.left+ancestor.clientLeft-.5||textBounds.right>r.left+ancestor.clientLeft+ancestor.clientWidth+.5);
+          const scrollClipsY=['auto','scroll'].includes(css.overflowY)&&
+            (textBounds.top<r.top+ancestor.clientTop-.5||textBounds.bottom>r.top+ancestor.clientTop+ancestor.clientHeight+.5);
+          if (scrollClipsX || scrollClipsY || css.textOverflow === 'ellipsis' || (css.webkitLineClamp !== 'none' && css.webkitLineClamp !== '0')) intentional = true;
           if (['hidden', 'clip', 'auto', 'scroll'].includes(css.overflowX)) {
             left = Math.max(left, r.left + ancestor.clientLeft);
             right = Math.min(right, r.left + ancestor.clientLeft + ancestor.clientWidth);
