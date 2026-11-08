@@ -15,8 +15,8 @@ from .sources import fetch_json, download
 REPOSITORY = 'xcodemind/webcode2m_purified'
 
 
-def select_row(row, *, revision, shard, row_id):
-    if type(row.get('score')) is not int or row['score'] < 2:
+def select_row(row, *, revision, shard, row_id, min_score=2):
+    if type(row.get('score')) is not int or row['score'] < min_score:
         raise ValueError('source_quality_score')
     html = row.get('text')
     if not isinstance(html, str):
@@ -35,12 +35,13 @@ def select_row(row, *, revision, shard, row_id):
                 'public_release_status': 'research_only', 'source_quality_score': row['score']}}
 
 
-def select_webcode(output, revision, *, per_stratum=2000, max_shards=None):
+def select_webcode(output, revision, *, per_stratum=2000, max_shards=None, min_score=2):
     import aiohttp
     import fsspec
     import pyarrow.parquet as pq
 
     if (not re.fullmatch('[a-f0-9]{40}', revision) or type(per_stratum) is not int or per_stratum < 1
+            or type(min_score) is not int or not 2 <= min_score <= 5
             or (max_shards is not None and (type(max_shards) is not int or max_shards < 1))):
         raise ValueError('invalid selection budget or revision')
     root = Path(output)
@@ -67,7 +68,7 @@ def select_webcode(output, revision, *, per_stratum=2000, max_shards=None):
                 CREATE TABLE IF NOT EXISTS candidates(id TEXT PRIMARY KEY, stratum TEXT, rank TEXT, record TEXT);
                 CREATE INDEX IF NOT EXISTS strata_rank ON candidates(stratum,rank);''')
             contract = canonical({'revision': revision, 'per_stratum': per_stratum, 'shards': shards,
-                                  'selector_version': 1})
+                                  'selector_version': 1, **({'min_score': min_score} if min_score != 2 else {})})
             previous = db.execute('SELECT value FROM contract').fetchone()
             if previous and previous[0] != contract:
                 raise ValueError('selection contract changed')
@@ -104,15 +105,24 @@ def select_webcode(output, revision, *, per_stratum=2000, max_shards=None):
                 url = f'https://huggingface.co/datasets/{REPOSITORY}/resolve/{revision}/{shard}'
                 with fs.open(url, 'rb') as handle:
                     parquet = pq.ParquetFile(handle, pre_buffer=False)
+                    column = parquet.schema.names.index('score')
+                    score_stats = [parquet.metadata.row_group(i).column(column).statistics
+                                   for i in range(parquet.metadata.num_row_groups)]
+                    pruned = bool(score_stats) and all(s and s.has_min_max and s.max < min_score for s in score_stats)
+                    if pruned:
+                        stats.update(rows=parquet.metadata.num_rows, source_quality_score=parquet.metadata.num_rows,
+                                     metadata_pruned_rows=parquet.metadata.num_rows)
                     row_id = 0
-                    for batch in parquet.iter_batches(columns=['text', 'score'], batch_size=64, use_threads=False):
+                    batches = () if pruned else parquet.iter_batches(columns=['text', 'score'], batch_size=64, use_threads=False)
+                    for batch in batches:
                         guard(root)
                         with db:
                             for row in batch.to_pylist():
                                 current_id, row_id = row_id, row_id + 1
                                 stats['rows'] += 1
                                 try:
-                                    record = select_row(row, revision=revision, shard=shard, row_id=current_id)
+                                    record = select_row(row, revision=revision, shard=shard, row_id=current_id,
+                                                        min_score=min_score)
                                 except ValueError as error:
                                     stats[str(error)] += 1
                                     continue
@@ -135,7 +145,7 @@ def select_webcode(output, revision, *, per_stratum=2000, max_shards=None):
                       'shards_total': len(shards), 'counts': dict(totals),
                       'selected': db.execute('SELECT count(*) FROM candidates').fetchone()[0],
                       'strata': dict(db.execute('SELECT stratum,count(*) FROM candidates GROUP BY stratum')),
-                      'revision': revision}
+                      'revision': revision, 'min_score': min_score}
             with (root / 'manifest.part').open('w') as output:
                 for (value,) in db.execute('SELECT record FROM candidates ORDER BY id'):
                     output.write(value + '\n')

@@ -73,3 +73,57 @@ def test_resume_reuses_pinned_assets_and_keeps_bounded_selection(tmp_path, monke
     report = module.select_webcode(tmp_path / 'output', revision, max_shards=2, per_stratum=1)
     assert report['shards_completed'] == 2 and report['selected'] == 1
     assert report['counts']['rows'] == 2
+
+
+def test_quality_threshold_filters_rows_and_is_pinned_on_resume(tmp_path, monkeypatch):
+    import json
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    module, revision = selection_fixture(tmp_path, monkeypatch)
+    pq.write_table(pa.Table.from_pylist([{'text': '<main>High quality</main>', 'score': 5}]),
+                   tmp_path/'00002.parquet')
+    report = module.select_webcode(tmp_path/'output', revision, min_score=4)
+    assert report['selected'] == 1
+    assert report['counts']['rows'] == 2
+    assert report['counts']['source_quality_score'] == 1
+    assert report['counts']['metadata_pruned_rows'] == 1
+    row = json.loads((tmp_path/'output/manifest.jsonl').read_text())
+    assert row['provenance']['source_quality_score'] == 5
+    assert module.select_webcode(tmp_path/'output', revision, min_score=4)['selected'] == 1
+    with pytest.raises(ValueError, match='contract changed'):
+        module.select_webcode(tmp_path/'output', revision, min_score=5)
+
+
+@pytest.mark.parametrize('score,accepted', [(3, False), (4, True), (5, True)])
+def test_row_quality_boundary(score, accepted):
+    row = {'text': '<main>Application</main>', 'score': score}
+    if accepted:
+        assert select_row(row, revision='a'*40, shard='a', row_id=0,
+                          min_score=4)['provenance']['source_quality_score'] == score
+    else:
+        with pytest.raises(ValueError, match='source_quality_score'):
+            select_row(row, revision='a'*40, shard='a', row_id=0, min_score=4)
+
+
+@pytest.mark.parametrize('statistics', [True, False])
+def test_threshold_keeps_boundary_row_in_mixed_or_unindexed_shard(tmp_path, monkeypatch, statistics):
+    import json
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    module, revision = selection_fixture(tmp_path, monkeypatch)
+    pq.write_table(pa.Table.from_pylist([
+        {'text': '<p>Below threshold</p>', 'score': 3},
+        {'text': '<p>At threshold</p>', 'score': 4}]),
+        tmp_path/'00001.parquet', row_group_size=1, write_statistics=statistics)
+    report = module.select_webcode(tmp_path/'output', revision, min_score=4, max_shards=1)
+    assert report['selected'] == 1 and report['counts']['rows'] == 2
+    assert report['counts']['source_quality_score'] == 1
+    assert not report['counts'].get('metadata_pruned_rows')
+    assert json.loads((tmp_path/'output/manifest.jsonl').read_text())['html'] == '<p>At threshold</p>'
+
+
+@pytest.mark.parametrize('threshold', [True, 1, 6, 4.0])
+def test_selection_rejects_invalid_threshold(tmp_path, threshold):
+    from lumen_data.webcode_selection import select_webcode
+    with pytest.raises(ValueError, match='selection budget'):
+        select_webcode(tmp_path/'output', 'a'*40, min_score=threshold)

@@ -39,6 +39,7 @@ def main():
     webcode.add_argument('--revision', required=True)
     webcode.add_argument('--per-stratum', type=int, default=2000)
     webcode.add_argument('--max-shards', type=int)
+    webcode.add_argument('--min-score', type=int, default=2)
     webui = sources.add_parser('webui')
     webui.add_argument('--snapshot', required=True)
     webui.add_argument('--output', required=True)
@@ -95,7 +96,7 @@ def main():
             elif args.source_command == 'select-webcode':
                 from .webcode_selection import select_webcode
                 result = select_webcode(args.output, args.revision, per_stratum=args.per_stratum,
-                                        max_shards=args.max_shards)
+                                        max_shards=args.max_shards, min_score=args.min_score)
             elif args.source_command == 'webui':
                 from .modern_corpus import import_webui
                 result = import_webui(args.snapshot, args.output, args.revision)
