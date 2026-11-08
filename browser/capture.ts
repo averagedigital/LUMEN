@@ -84,6 +84,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
   const blocked: string[] = [];
   const fonts = new Map<string, Buffer>();
   let javascriptErrors = 0;
+  let sourceNavigated = false;
   if (javascript) await context.routeWebSocket('**/*', socket => { blocked.push('websocket'); socket.close(); });
   await context.route('**/*', async route => {
     const asset = request.assets?.[route.request().url()];
@@ -108,6 +109,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
     page.on('pageerror', () => { javascriptErrors++; });
+    page.on('framenavigated', frame => { if (frame === page.mainFrame() && frame.url().split('#')[0] !== 'about:blank') sourceNavigated = true; });
     if (javascript) {
       // Offline JS has a fixed initialization window; later timers stay paused.
       await page.clock.install({time: new Date('2026-01-01T00:00:00Z')});
@@ -144,6 +146,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       style.textContent = '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}';
       document.head.append(style);
     });
+    if (javascript && sourceNavigated) return {status: 'invalid_baseline', issues: [], evidence: {reason: 'source_navigation'}};
     if (javascriptErrors) return {status: 'invalid_baseline', issues: [], evidence: {reason: 'javascript_error', count: javascriptErrors}};
     const imagesReady = await page.evaluate(() => Array.from(document.images).every(i => i.complete && i.naturalWidth > 0));
     if (!imagesReady || blocked.length) return {status: 'invalid_baseline', issues: [], evidence: {reason: 'missing_assets', blocked: blocked.length}};
@@ -280,6 +283,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       TEXT_SYMPTOMS.includes(issue.symptom) :
       issue.symptom === componentSymptom(operator)))) status = 'accepted_bug';
     else if (!changed) status = 'no_visible_effect';
+    if (javascript && sourceNavigated) return {status: 'invalid_baseline', issues: [], evidence: {reason: 'source_navigation'}};
     if (javascriptErrors || blocked.length) return {status: 'invalid_baseline', issues: [],
       evidence: {reason: javascriptErrors ? 'javascript_error' : 'missing_assets', blocked: blocked.length, count: javascriptErrors}};
     return {status, issues, receipt, reference: reference.toString('base64'), current: current.toString('base64'),
@@ -289,6 +293,12 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       timings: {baseline: captured - started,
         mutation_capture_oracle: verified - captured, rollback: performance.now() - verified}};
   } catch (error) {
+    if (javascript && error instanceof Error && error.message.includes('Execution context was destroyed')) {
+      return {status: 'invalid_baseline', issues: [], evidence: {reason: 'source_navigation'}};
+    }
+    if (javascript && (sourceNavigated || blocked.length)) {
+      return {status: 'invalid_baseline', issues: [], evidence: {reason: sourceNavigated ? 'source_navigation' : 'missing_assets'}};
+    }
     if (error instanceof Error && ['scene_limit: media rules', 'scene_limit: media breakpoints',
       'scene_limit: nested media rules'].some(message => error.message.includes(message))) {
       return {status: 'inapplicable', issues: [], evidence: {reason: 'responsive_rule_limit'}};

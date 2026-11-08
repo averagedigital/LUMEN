@@ -34,3 +34,14 @@ test('event handler errors after initialization cannot become clean labels',asyn
     html:shell+'<button onfocus="throw new Error(\'broken focus\')">Save</button>'});
   assert.equal(result.status,'invalid_baseline');
 });
+test('source navigation is rejected without killing subsequent captures',async()=>{
+  const result=await captureCase(browser,{...request,render_mode:'offline-js',operator:'clean',
+    html:shell+'<p>Visible</p><script>setTimeout(()=>location.href="https://example.invalid/redirect",10)</script>'});
+  assert.equal(result.status,'invalid_baseline');
+  assert.equal((await captureCase(browser,{...request,render_mode:'offline-js'})).status,'accepted_bug');
+});
+test('same-document hash routing remains a valid clean source',async()=>{
+  const result=await captureCase(browser,{...request,render_mode:'offline-js',operator:'clean',
+    html:shell+'<p>Account settings</p><script>location.hash="settings"</script>'});
+  assert.equal(result.status,'accepted_clean');
+});
