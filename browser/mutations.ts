@@ -1,10 +1,12 @@
 import type { Page } from 'playwright';
 import type { ElementState } from './snapshot.ts';
+import { COMPONENT_OPERATORS } from './component_defects.ts';
+import type { Rect } from './geometry.ts';
 
 export const OPERATORS = ['text_clip_x', 'text_clip_y', 'text_contrast_failure',
-  'viewport_partial_cutoff', 'sibling_occlusion', 'clean', 'benign_theme', 'benign_action'] as const;
+  'viewport_partial_cutoff', 'sibling_occlusion', ...COMPONENT_OPERATORS, 'clean', 'benign_theme', 'benign_action'] as const;
 export type Operator = typeof OPERATORS[number];
-export type Receipt = { operator: string; target: string; params: Record<string, unknown> };
+export type Receipt = { operator: string; target: string; params: Record<string, unknown>; cause_region_css: Rect };
 
 function occluder(states: ElementState[], target: ElementState) {
   return states.find(s => s.id !== target.id && s.fullyInViewport && s.hitRatio > .95 && !s.intentional && s.background);
@@ -20,12 +22,14 @@ export function discover(states: ElementState[], operator: string): ElementState
 export async function apply(page: Page, operator: Operator, target: ElementState, states: ElementState[], seed: number): Promise<Receipt> {
   const ratio = [.45, .6, .7][seed % 3];
   const params: Record<string, unknown> = {ratio};
+  let cause = target.rect;
   if (operator === 'text_contrast_failure') params.foregroundPercent = 8 + seed % 3 * 4;
   if (operator === 'sibling_occlusion') {
     const other = occluder(states, target);
     if (!other) throw new Error('inapplicable: second element');
     params.other = other.id;
     params.background = other.background;
+    cause = other.rect;
   }
   await page.evaluate(({operator, target, params}) => {
     const el = document.querySelector<HTMLElement>(`[data-lumen-id="${target.id}"]`)!;
@@ -48,5 +52,5 @@ export async function apply(page: Page, operator: Operator, target: ElementState
         backgroundColor: String(params.background), whiteSpace: 'nowrap'});
     }
   }, {operator, target, params});
-  return {operator, target: target.id, params};
+  return {operator, target: target.id, params, cause_region_css: cause};
 }

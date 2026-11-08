@@ -2,12 +2,14 @@ import type { Browser, Page } from 'playwright';
 import { snapshot } from './snapshot.ts';
 import { apply, discover, OPERATORS, type Operator } from './mutations.ts';
 import { validate, type Finding } from './validate.ts';
-import { annotations } from './annotations.ts';
+import { annotations, visibleScenarios } from './annotations.ts';
+import { COMPONENT_OPERATORS, componentSnapshot, componentBaselineProblems,
+  discoverComponent, applyComponent, validateComponents } from './component_defects.ts';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export type Request = { html: string; operator: string; seed: number; viewport: [number, number]; dpr: number; locale?: string; annotations?: boolean;
+export type Request = { html: string; operator: string; seed: number; viewport: [number, number]; dpr: number; locale?: string; annotations?: boolean; initialModal?: string;
   assets?: Record<string, {sha256: string; content_type: string}> };
 export type CaptureResult = {
   status: string; issues: Finding[]; evidence?: unknown; reference?: string; current?: string;
@@ -16,12 +18,41 @@ export type CaptureResult = {
   statesAfter?: Awaited<ReturnType<typeof annotations>>;
   interaction?: {origin: string; action: string; element_id: string};
   scrollBefore?: number[]; scrollAfter?: number[];
+  scenario_tags?: string[];
 };
 
 async function stable(page: Page): Promise<Buffer | null> {
   const first = await page.screenshot({animations: 'disabled', caret: 'hide', timeout: 15000});
   const second = await page.screenshot({animations: 'disabled', caret: 'hide', timeout: 15000});
   return first.equals(second) ? first : null;
+}
+
+function textProblems(states: Awaited<ReturnType<typeof snapshot>>, viewport: [number, number]) {
+  return states.filter(s => !s.intentional &&
+    ((s.fullyInViewport && (s.visibleRatio < .98 || s.hitRatio < .9 || (s.contrast !== null && s.contrast < 2))) ||
+     (s.textRect.y < viewport[1] && s.textRect.y + s.textRect.height > 0 &&
+      s.textRect.x < viewport[0] && s.textRect.x + s.textRect.width > 0 &&
+      (s.textRect.x < 0 || s.textRect.x + s.textRect.width > viewport[0] ||
+       (s.viewportBound && (s.textRect.y < 0 || s.textRect.y + s.textRect.height > viewport[1]))))));
+}
+
+async function componentIssues(page: Page, findings: Finding[], target: string, operator: string): Promise<Finding[]> {
+  const root = findings.find(f => f.id === target && f.symptom === operator);
+  if (!root) return findings;
+  const descendants = await page.evaluate(target => {
+    const element = document.querySelector(`[data-lumen-component-id="${CSS.escape(target)}"]`);
+    return element ? [element, ...element.querySelectorAll('*')].flatMap(el =>
+      ['data-lumen-id', 'data-lumen-component-id'].map(name => el.getAttribute(name)).filter(id => id !== null)) : [];
+  }, target);
+  const ids = new Set(descendants);
+  const related = findings.filter(f => ids.has(f.id));
+  if (related.length < 2) return findings;
+  const bbox = [...root.bbox] as Finding['bbox'];
+  for (const finding of related) {
+    bbox[0] = Math.min(bbox[0], finding.bbox[0]); bbox[1] = Math.min(bbox[1], finding.bbox[1]);
+    bbox[2] = Math.max(bbox[2], finding.bbox[2]); bbox[3] = Math.max(bbox[3], finding.bbox[3]);
+  }
+  return [{...root, bbox, evidence: {...root.evidence, observations: related}}, ...findings.filter(f => !ids.has(f.id))];
 }
 
 export async function captureCase(browser: Browser, request: Request): Promise<CaptureResult> {
@@ -76,8 +107,16 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     });
     const imagesReady = await page.evaluate(() => Array.from(document.images).every(i => i.complete && i.naturalWidth > 0));
     if (!imagesReady || blocked.length) return {status: 'invalid_baseline', issues: [], evidence: {reason: 'missing_assets', blocked: blocked.length}};
+    if (request.initialModal) {
+      await page.evaluate(id => {
+        const dialog = document.getElementById(id);
+        if (!(dialog instanceof HTMLDialogElement) || dialog.open) throw new Error('invalid initial modal');
+        dialog.showModal();
+      }, request.initialModal);
+    }
+    const actionSelector = request.initialModal ? 'dialog:modal [data-lumen-action="close"]' : 'summary[data-element-id="help-toggle"]';
     if (request.operator === 'benign_action') {
-      const target = page.locator('summary[data-element-id="help-toggle"]');
+      const target = page.locator(actionSelector);
       if (await target.count() !== 1) return {status: 'inapplicable', issues: []};
       await target.scrollIntoViewIfNeeded();
     }
@@ -88,17 +127,21 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       }, seed);
     }
     const scrollBefore = await page.evaluate(() => [scrollX, scrollY]);
+    const scenario_tags = await visibleScenarios(page);
     const elements = request.annotations ? await annotations(page) : undefined;
     const before = await snapshot(page);
+    const componentsBefore = await componentSnapshot(page);
+    const componentOperator = COMPONENT_OPERATORS.some(name => name === request.operator);
+    const componentCandidates = discoverComponent(componentsBefore, request.operator);
     const candidates = discover(before, request.operator);
-    if (candidates.length === 0) return {status: 'inapplicable', issues: []};
-    const baselineProblems = before.filter(s => !s.intentional &&
-      ((s.fullyInViewport && (s.visibleRatio < .98 || s.hitRatio < .9 || (s.contrast !== null && s.contrast < 2))) ||
-       (s.textRect.y < viewport[1] && s.textRect.y + s.textRect.height > 0 &&
-        s.textRect.x < viewport[0] && s.textRect.x + s.textRect.width > 0 &&
-        (s.textRect.x < 0 || s.textRect.x + s.textRect.width > viewport[0] ||
-         (s.viewportBound && (s.textRect.y < 0 || s.textRect.y + s.textRect.height > viewport[1]))))));
+    const baselineProblems = textProblems(before, viewport);
     if (baselineProblems.length) return {status: 'invalid_baseline', issues: [], evidence: baselineProblems};
+    const componentProblems = componentBaselineProblems(componentsBefore);
+    if (componentProblems.length) return {status: 'invalid_baseline', issues: [], evidence: componentProblems};
+    const negative = request.operator === 'clean' || request.operator.startsWith('benign_');
+    if (componentOperator ? !componentCandidates.length : !candidates.length && !(negative && componentsBefore.length)) {
+      return {status: 'inapplicable', issues: []};
+    }
     const reference = await stable(page);
     if (!reference) return {status: 'unstable', issues: [], evidence: {reason: 'baseline_capture'}};
     const captured = performance.now();
@@ -108,47 +151,71 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     let receipt: unknown = null;
     let interaction: CaptureResult['interaction'];
     const detailsBefore = await page.evaluate(() => Array.from(document.querySelectorAll('details')).map(e => e.open));
+    const dialogsBefore = await page.evaluate(() => Array.from(document.querySelectorAll('dialog')).map(e =>
+      ({open: e.open, modal: e.matches(':modal'), returnValue: e.returnValue})));
     const activeBefore = await page.evaluate(() => Array.from(document.querySelectorAll('body,body *')).indexOf(document.activeElement!));
     if (operator === 'benign_theme') {
       await page.evaluate(() => { document.body.style.backgroundColor = '#eff6ff'; });
     } else if (operator === 'benign_action') {
-      await page.locator('summary[data-element-id="help-toggle"]').click();
+      const elementId = await page.locator(actionSelector).getAttribute('data-element-id');
+      if (!elementId) throw new Error('action target has no stable id');
+      await page.locator(actionSelector).click();
       await page.evaluate(scroll => window.scrollTo(scroll[0], scroll[1]), scrollBefore);
-      interaction = {origin: 'synthetic', action: 'click', element_id: 'help-toggle'};
+      interaction = {origin: 'synthetic', action: 'click', element_id: elementId};
+    } else if (componentOperator) {
+      receipt = await applyComponent(page, operator, componentCandidates[seed % componentCandidates.length], componentsBefore, seed);
     } else if (operator !== 'clean') {
       receipt = await apply(page, operator, candidates[seed % candidates.length], before, seed);
     }
     const after = await snapshot(page);
     const statesAfter = request.annotations ? await annotations(page) : undefined;
     const scrollAfter = await page.evaluate(() => [scrollX, scrollY]);
-    const issues = validate(before, after, viewport, dpr);
+    const componentsAfter = await componentSnapshot(page);
+    let issues = [...validate(before, after, viewport, dpr),
+      ...validateComponents(componentsBefore, componentsAfter, viewport, dpr)];
+    const validAfter = !negative || (!textProblems(after, viewport).length && !componentBaselineProblems(componentsAfter).length);
+    if (componentOperator && receipt) {
+      issues = await componentIssues(page, issues, (receipt as {target: string}).target, operator);
+    }
     const current = await stable(page);
     if (!current) return {status: 'unstable', issues: [], evidence: {reason: 'current_capture'}};
     const verified = performance.now();
     await page.evaluate(styles => Array.from(document.querySelectorAll<HTMLElement>('body,body *')).forEach((el, i) => {
       if (styles[i] === null) el.removeAttribute('style'); else el.setAttribute('style', styles[i]);
     }), styles);
-    await page.evaluate(({detailsBefore, activeBefore, scrollBefore}) => {
+    await page.evaluate(({detailsBefore, dialogsBefore, activeBefore, scrollBefore}) => {
       document.querySelectorAll('details').forEach((el, i) => { el.open = detailsBefore[i]; });
+      document.querySelectorAll('dialog').forEach((el, i) => {
+        const old = dialogsBefore[i];
+        if (el.open !== old.open || el.matches(':modal') !== old.modal) {
+          if (el.open) el.close();
+          if (old.open) { if (old.modal) el.showModal(); else el.show(); }
+        }
+        el.returnValue = old.returnValue;
+      });
       if (activeBefore >= 0) document.querySelectorAll<HTMLElement>('body,body *')[activeBefore]?.focus({preventScroll: true});
       else (document.activeElement as HTMLElement)?.blur();
       window.scrollTo(scrollBefore[0], scrollBefore[1]);
-    }, {detailsBefore, activeBefore, scrollBefore});
+    }, {detailsBefore, dialogsBefore, activeBefore, scrollBefore});
+    await page.mouse.move(0, 0);
     const restored = await stable(page);
     if (!restored?.equals(reference)) return {status: 'unstable', issues: [], evidence: {reason: 'rollback_failed'}};
     const changed = !reference.equals(current);
     let status = 'unverified';
     if (operator === 'clean' && !changed && issues.length === 0) status = 'accepted_clean';
-    else if (operator.startsWith('benign_') && changed && issues.length === 0) status = 'accepted_benign_change';
+    else if (operator.startsWith('benign_') && changed && issues.length === 0 && validAfter) status = 'accepted_benign_change';
     else if (changed && issues.some(issue => issue.symptom === operator)) status = 'accepted_bug';
     else if (!changed) status = 'no_visible_effect';
     return {status, issues, receipt, reference: reference.toString('base64'), current: current.toString('base64'),
-      rollback: true, browser: browser.version(), elements, statesAfter, interaction, scrollBefore, scrollAfter,
+      rollback: true, browser: browser.version(), elements, statesAfter, interaction, scrollBefore, scrollAfter, scenario_tags,
       timings: {baseline: captured - started,
         mutation_capture_oracle: verified - captured, rollback: performance.now() - verified}};
   } catch (error) {
     if (error instanceof Error && error.message.includes('scene_limit: text elements')) {
       return {status: 'invalid_baseline', issues: [], evidence: {reason: 'text_element_limit'}};
+    }
+    if (error instanceof Error && error.message.includes('scene_limit: component')) {
+      return {status: 'invalid_baseline', issues: [], evidence: {reason: 'component_element_limit'}};
     }
     throw error;
   } finally { clearTimeout(deadline); await context.close(); }

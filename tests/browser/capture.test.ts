@@ -27,6 +27,8 @@ for (const operator of ['text_clip_x', 'text_clip_y', 'text_contrast_failure', '
     assert.equal(result.status, 'accepted_bug', JSON.stringify(result.evidence));
     assert.ok(result.issues.length > 0);
     assert.equal(result.rollback, true);
+    const receipt = result.receipt as {cause_region_css: {width: number; height: number}};
+    assert.ok(receipt.cause_region_css.width > 0 && receipt.cause_region_css.height > 0);
     assert.notEqual(result.reference, result.current);
     const again = await captureCase(browser, {html, operator, seed: 42, viewport: [800, 600], dpr: 1});
     assert.equal(result.current, again.current);
