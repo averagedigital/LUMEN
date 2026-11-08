@@ -86,3 +86,21 @@ test('threshold search detects a neighboring symptom before the cause clips', as
   assert.equal(result.rollback, true);
   assert.equal((await captureCase(browser, request)).current, result.current);
 });
+
+test('typography mutations discover ordinary flex layouts without overflow clipping',async()=>{
+  const html='<body style="margin:32px;background:white;color:#111;font:20px Arial"><div style="display:flex;width:330px"><span style="flex:0 0 150px;min-width:0;white-space:nowrap">Account settings</span><span style="white-space:nowrap">Save changes</span></div></body>';
+  const request={html,operator:'font_size_regression',seed:0,viewport:[800,600] as [number,number],dpr:1};
+  assert.equal((await captureCase(browser,{...request,operator:'clean'})).status,'accepted_clean');
+  const result=await captureCase(browser,request);
+  assert.equal(result.status,'accepted_bug');
+  assert.ok(result.issues.some(issue=>issue.symptom==='sibling_occlusion'));
+  assert.equal(result.rollback,true);
+});
+
+test('a flexible layout that accommodates larger text remains a negative',async()=>{
+  const html='<body style="margin:32px;background:white;color:#111;font:20px Arial"><div style="display:flex;flex-wrap:wrap;gap:32px"><span>Account settings</span><span>Save changes</span></div></body>';
+  const result=await captureCase(browser,{html,operator:'font_size_regression',seed:0,viewport:[800,600],dpr:1});
+  assert.equal(result.status,'unverified');
+  assert.deepEqual(result.issues,[]);
+  assert.equal(result.rollback,true);
+});

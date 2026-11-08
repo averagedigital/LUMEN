@@ -27,12 +27,13 @@ export async function discoverRealistic(page: Page, states: ElementState[], oper
       if (operator === 'grid_min_content_regression') return container.display === 'grid' && parent.firstElementChild === el && /^\d+(?:\.\d+)?px(?: \d+(?:\.\d+)?px)+$/.test(container.gridTemplateColumns);
     }
     if (['containing_block_removal', 'stacking_context_regression', 'flex_min_width_regression', 'grid_min_content_regression'].includes(operator)) return false;
-    let clippedAncestor = false;
+    let layoutContext = false;
     for (let parent: HTMLElement | null = el; parent && parent !== document.body; parent = parent.parentElement) {
       const style = getComputedStyle(parent);
-      clippedAncestor ||= ['hidden', 'clip'].includes(style.overflowX) || ['hidden', 'clip'].includes(style.overflowY);
+      layoutContext ||= ['hidden', 'clip'].includes(style.overflowX) || ['hidden', 'clip'].includes(style.overflowY) ||
+        ['flex', 'inline-flex', 'grid', 'inline-grid'].includes(style.display) || parent.matches('button,label,nav,td,th');
     }
-    if (!clippedAncestor) return false;
+    if (!layoutContext) return false;
     if (operator === 'nowrap_regression') return !['nowrap', 'pre'].includes(css.whiteSpace);
     if (operator === 'word_break_regression') return css.overflowWrap !== 'normal' || css.wordBreak !== 'normal';
     if (operator === 'line_height_regression') return Number.isFinite(parseFloat(css.lineHeight));
