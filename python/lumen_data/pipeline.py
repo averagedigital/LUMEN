@@ -28,11 +28,15 @@ from .renderable import structural_identity
 from .similarity import audit_cross_split
 
 ARCHETYPES = GRAMMAR_V2
+REALISTIC_OPERATORS = ('font_size_regression', 'nowrap_regression', 'word_break_regression',
+                       'letter_spacing_regression', 'line_height_regression',
+                       'font_family_regression', 'text_indent_regression',
+                       'relative_offset_regression', 'padding_box_regression')
 OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_partial_cutoff',
               'sibling_occlusion') + ('flex_overflow', 'grid_track_collapse', 'container_height_collapse',
               'header_collision', 'table_cell_overlap', 'dropdown_clipping', 'modal_content_overflow',
               'input_adornment_collision', 'image_aspect_distortion', 'svg_clipping') * 3 + ('clean',) * 5 +
-             ('benign_theme', 'benign_action', 'benign_action'))
+             ('benign_theme', 'benign_action', 'benign_action') + REALISTIC_OPERATORS)
 REQUEST_TIMEOUT_SECONDS = 60
 
 
@@ -252,7 +256,16 @@ def revision():
     return digest.hexdigest()
 
 
+def operator_mix(config):
+    operators = config.get('operators', OPERATORS)
+    if (not isinstance(operators, (list, tuple)) or not operators or
+            any(operator not in OPERATORS for operator in operators)):
+        raise ValueError('invalid operator mix')
+    return list(operators)
+
+
 def recipe(index, config, version):
+    operators = operator_mix(config)
     base = index // config['variants_per_scene']
     # Separate draws avoid correlating labels with scene families or screen sizes.
     entropy = bytes.fromhex(case_id({'seed': config['seed'], 'base': base}))
@@ -262,7 +275,7 @@ def recipe(index, config, version):
     family_index = base // 2 if config.get('source_manifest') else base
     return {'scene': {'seed': int.from_bytes(entropy[4:8], 'big'), 'archetype': ARCHETYPES[family_index % 20],
                       'locale': locale, 'width': width}, 'seed': config['seed'] + index,
-            'operator': OPERATORS[operator_draw % len(OPERATORS)], 'viewport': [width, 720 + entropy[2] % 4 * 80],
+            'operator': operators[operator_draw % len(operators)], 'viewport': [width, 720 + entropy[2] % 4 * 80],
             'dpr': 1, 'locale': locale, 'generator_revision': version}
 
 
@@ -323,6 +336,7 @@ def save_result(store, task, result):
 
 def generate(config_path, run, target=None, resume=False):
     config = yaml.safe_load(Path(config_path).read_text())
+    operators = operator_mix(config)
     if config['variants_per_scene'] not in range(1, 17):
         raise ValueError('variants_per_scene must be between 1 and 16')
     worker_count = config.get('workers', 1)
@@ -338,6 +352,7 @@ def generate(config_path, run, target=None, resume=False):
     store = Store(root)
     contract = {key: config[key] for key in ('seed', 'variants_per_scene', 'source_manifest')}
     contract['generator_revision'] = revision()
+    contract['operators'] = operators
     if config.get('source_manifest'):
         with Path(config['source_manifest']).open('rb') as handle:
             contract['source_manifest_sha256'] = hashlib.file_digest(handle, 'sha256').hexdigest()

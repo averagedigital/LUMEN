@@ -1,13 +1,14 @@
 import type { Browser, Page } from 'playwright';
 import { snapshot } from './snapshot.ts';
 import { apply, discover, OPERATORS, type Operator } from './mutations.ts';
-import { validate, type Finding } from './validate.ts';
+import { validate, textProblems, type Finding } from './validate.ts';
 import { annotations, visibleScenarios } from './annotations.ts';
 import { COMPONENT_OPERATORS, componentSnapshot, componentBaselineProblems,
   discoverComponent, applyComponent, validateComponents } from './component_defects.ts';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { REALISTIC_OPERATORS, TEXT_SYMPTOMS, discoverRealistic, applyRealistic } from './realistic_mutations.ts';
 
 export type Request = { html: string; operator: string; seed: number; viewport: [number, number]; dpr: number; locale?: string; annotations?: boolean; initialModal?: string;
   assets?: Record<string, {sha256: string; content_type: string}> };
@@ -25,15 +26,6 @@ async function stable(page: Page): Promise<Buffer | null> {
   const first = await page.screenshot({animations: 'disabled', caret: 'hide', timeout: 15000});
   const second = await page.screenshot({animations: 'disabled', caret: 'hide', timeout: 15000});
   return first.equals(second) ? first : null;
-}
-
-function textProblems(states: Awaited<ReturnType<typeof snapshot>>, viewport: [number, number]) {
-  return states.filter(s => !s.intentional &&
-    ((s.fullyInViewport && (s.visibleRatio < .98 || s.hitRatio < .9 || (s.contrast !== null && s.contrast < 2))) ||
-     (s.textRect.y < viewport[1] && s.textRect.y + s.textRect.height > 0 &&
-      s.textRect.x < viewport[0] && s.textRect.x + s.textRect.width > 0 &&
-      (s.textRect.x < 0 || s.textRect.x + s.textRect.width > viewport[0] ||
-       (s.viewportBound && (s.textRect.y < 0 || s.textRect.y + s.textRect.height > viewport[1]))))));
 }
 
 async function componentIssues(page: Page, findings: Finding[], target: string, operator: string): Promise<Finding[]> {
@@ -133,7 +125,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const componentsBefore = await componentSnapshot(page);
     const componentOperator = COMPONENT_OPERATORS.some(name => name === request.operator);
     const componentCandidates = discoverComponent(componentsBefore, request.operator);
-    const candidates = discover(before, request.operator);
+    const realisticOperator = REALISTIC_OPERATORS.some(name => name === request.operator);
+    const candidates = realisticOperator ? await discoverRealistic(page, before, request.operator) : discover(before, request.operator);
     const baselineProblems = textProblems(before, viewport);
     if (baselineProblems.length) return {status: 'invalid_baseline', issues: [], evidence: baselineProblems};
     const componentProblems = componentBaselineProblems(componentsBefore);
@@ -164,6 +157,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       interaction = {origin: 'synthetic', action: 'click', element_id: elementId};
     } else if (componentOperator) {
       receipt = await applyComponent(page, operator, componentCandidates[seed % componentCandidates.length], componentsBefore, seed);
+    } else if (realisticOperator) {
+      receipt = await applyRealistic(page, operator, candidates[seed % candidates.length], before, viewport, dpr);
     } else if (operator !== 'clean') {
       receipt = await apply(page, operator, candidates[seed % candidates.length], before, seed);
     }
@@ -176,6 +171,10 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const validAfter = !negative || (!textProblems(after, viewport).length && !componentBaselineProblems(componentsAfter).length);
     if (componentOperator && receipt) {
       issues = await componentIssues(page, issues, (receipt as {target: string}).target, operator);
+    }
+    if (realisticOperator && receipt) {
+      const mutation = receipt as Awaited<ReturnType<typeof applyRealistic>>;
+      mutation.symptoms = [...new Set(issues.filter(issue => issue.id === mutation.target).map(issue => issue.symptom))];
     }
     const current = await stable(page);
     if (!current) return {status: 'unstable', issues: [], evidence: {reason: 'current_capture'}};
@@ -204,7 +203,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     let status = 'unverified';
     if (operator === 'clean' && !changed && issues.length === 0) status = 'accepted_clean';
     else if (operator.startsWith('benign_') && changed && issues.length === 0 && validAfter) status = 'accepted_benign_change';
-    else if (changed && issues.some(issue => issue.symptom === operator)) status = 'accepted_bug';
+    else if (changed && issues.some(issue => realisticOperator ?
+      issue.id === (receipt as {target: string}).target && TEXT_SYMPTOMS.includes(issue.symptom) : issue.symptom === operator)) status = 'accepted_bug';
     else if (!changed) status = 'no_visible_effect';
     return {status, issues, receipt, reference: reference.toString('base64'), current: current.toString('base64'),
       rollback: true, browser: browser.version(), elements, statesAfter, interaction, scrollBefore, scrollAfter, scenario_tags,

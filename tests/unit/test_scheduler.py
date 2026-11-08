@@ -160,3 +160,42 @@ def test_resource_reserve_is_checked_before_launching_workers(tmp_path, monkeypa
     monkeypatch.setattr(pipeline, 'Worker', forbidden_worker)
     with pytest.raises(RuntimeError, match='memory reserve'):
         pipeline.generate(config(tmp_path, 4), tmp_path / 'run')
+
+
+def test_explicit_operator_mix_is_respected_and_rejects_unknown_mechanisms():
+    from lumen_data.pipeline import recipe
+    import pytest
+
+    config = {'seed': 7, 'variants_per_scene': 4,
+              'operators': ['font_size_regression', 'clean', 'clean']}
+    draws = [recipe(i, config, 'test')['operator'] for i in range(100)]
+    assert set(draws) == {'font_size_regression', 'clean'}
+    assert draws.count('clean') > draws.count('font_size_regression')
+    for invalid in [[], ['unknown'], 'clean', [1]]:
+        with pytest.raises(ValueError, match='operator'):
+            recipe(0, {**config, 'operators': invalid}, 'test')
+
+
+def test_resume_rejects_changed_operator_order_and_weights(tmp_path, monkeypatch):
+    fake_workers(monkeypatch, 1)
+    path = config(tmp_path, 1, target=1, max_attempts=1)
+    settings = yaml.safe_load(path.read_text())
+    settings['operators'] = ['clean', 'font_size_regression']
+    path.write_text(yaml.safe_dump(settings))
+    run = tmp_path / 'run'
+    pipeline.generate(path, run)
+    settings['operators'] = ['font_size_regression', 'clean']
+    path.write_text(yaml.safe_dump(settings))
+    with pytest.raises(ValueError, match='contract changed'):
+        pipeline.generate(path, run, resume=True)
+
+
+def test_invalid_operator_mix_does_not_create_a_run(tmp_path):
+    path = config(tmp_path, 1)
+    settings = yaml.safe_load(path.read_text())
+    settings['operators'] = ['not_an_operator']
+    path.write_text(yaml.safe_dump(settings))
+    run = tmp_path / 'run'
+    with pytest.raises(ValueError, match='operator'):
+        pipeline.generate(path, run)
+    assert not run.exists()

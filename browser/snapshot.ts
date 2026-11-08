@@ -5,6 +5,7 @@ export type ElementState = {
   id: string; text: string; rect: Rect; textRect: Rect; visibleRatio: number;
   hitRatio: number; contrast: number | null; background: string | null;
   intentional: boolean; fullyInViewport: boolean; viewportBound: boolean;
+  visibleTextRect: Rect; visibleRatioX: number; visibleRatioY: number;
 };
 
 export async function snapshot(page: Page): Promise<ElementState[]> {
@@ -91,6 +92,11 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
       const area = fragments.reduce((sum, r) => sum + r.width * r.height, 0);
       const visible = fragments.reduce((sum, r) => sum + Math.max(0, Math.min(r.right, right) - Math.max(r.left, left)) *
         Math.max(0, Math.min(r.bottom, bottom) - Math.max(r.top, top)), 0);
+      const visibleX = fragments.reduce((sum, r) => sum + Math.max(0, Math.min(r.right, right) - Math.max(r.left, left)) * r.height, 0);
+      const visibleY = fragments.reduce((sum, r) => sum + r.width * Math.max(0, Math.min(r.bottom, bottom) - Math.max(r.top, top)), 0);
+      const visibleTextRect = {x: Math.max(textBounds.left, left), y: Math.max(textBounds.top, top),
+        width: Math.max(0, Math.min(textBounds.right, right) - Math.max(textBounds.left, left)),
+        height: Math.max(0, Math.min(textBounds.bottom, bottom) - Math.max(textBounds.top, top))};
       let hits = 0, samples = 0;
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -113,6 +119,7 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
         (Math.min(luminance(foreground), luminance(bg)) + .05);
       return [{id: el.dataset.lumenId, text: el.textContent?.trim() ?? '', rect: rect(bounds),
         textRect: rect(textBounds), visibleRatio: area ? visible / area : 0,
+        visibleTextRect, visibleRatioX: area ? visibleX / area : 0, visibleRatioY: area ? visibleY / area : 0,
         hitRatio: samples ? hits / samples : 0, contrast, background,
         intentional, viewportBound, fullyInViewport: textBounds.left >= 0 && textBounds.top >= 0 &&
           textBounds.right <= innerWidth && textBounds.bottom <= innerHeight}];

@@ -62,7 +62,10 @@ def test_component_operators_are_scheduled_without_removing_text_operators():
     assert positives == {'text_clip_x', 'text_clip_y', 'text_contrast_failure',
         'viewport_partial_cutoff', 'sibling_occlusion', 'flex_overflow', 'grid_track_collapse',
         'container_height_collapse', 'header_collision', 'table_cell_overlap', 'dropdown_clipping',
-        'modal_content_overflow', 'input_adornment_collision', 'image_aspect_distortion', 'svg_clipping'}
+        'modal_content_overflow', 'input_adornment_collision', 'image_aspect_distortion', 'svg_clipping',
+        'font_size_regression', 'nowrap_regression', 'word_break_regression',
+        'letter_spacing_regression', 'line_height_regression', 'font_family_regression',
+        'text_indent_regression', 'relative_offset_regression', 'padding_box_regression'}
 
 
 def test_cause_region_and_visible_scenario_metadata_are_separate_from_issue_boxes():
