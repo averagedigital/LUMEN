@@ -61,22 +61,40 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
       let backgroundComplex = false;
       let effectiveOpacity = 1;
       let viewportBound = false;
+      let skipClipUntil: HTMLElement | null | undefined;
       for (let ancestor: HTMLElement | null = el; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor === skipClipUntil) skipClipUntil = undefined;
         const css = getComputedStyle(ancestor), r = ancestor.getBoundingClientRect();
         if (['absolute', 'fixed'].includes(css.position) && r.width <= 1 && r.height <= 1 &&
             css.overflowX === 'hidden' && css.overflowY === 'hidden' &&
             (css.clip.replace(/[,\s]/g, '') === 'rect(0px0px0px0px)' || css.clipPath === 'inset(50%)')) return [];
         effectiveOpacity *= Number(css.opacity);
         viewportBound ||= ['fixed', 'sticky'].includes(css.position);
-        if (['auto', 'scroll'].includes(css.overflowX) || ['auto', 'scroll'].includes(css.overflowY) ||
-            css.textOverflow === 'ellipsis' || (css.webkitLineClamp !== 'none' && css.webkitLineClamp !== '0')) intentional = true;
-        if (['hidden', 'clip', 'auto', 'scroll'].includes(css.overflowX)) {
-          left = Math.max(left, r.left + ancestor.clientLeft);
-          right = Math.min(right, r.left + ancestor.clientLeft + ancestor.clientWidth);
-        }
-        if (['hidden', 'clip', 'auto', 'scroll'].includes(css.overflowY)) {
-          top = Math.max(top, r.top + ancestor.clientTop);
-          bottom = Math.min(bottom, r.top + ancestor.clientTop + ancestor.clientHeight);
+        if (skipClipUntil === undefined) {
+          if (['auto', 'scroll'].includes(css.overflowX) || ['auto', 'scroll'].includes(css.overflowY) ||
+              css.textOverflow === 'ellipsis' || (css.webkitLineClamp !== 'none' && css.webkitLineClamp !== '0')) intentional = true;
+          if (['hidden', 'clip', 'auto', 'scroll'].includes(css.overflowX)) {
+            left = Math.max(left, r.left + ancestor.clientLeft);
+            right = Math.min(right, r.left + ancestor.clientLeft + ancestor.clientWidth);
+          }
+          if (['hidden', 'clip', 'auto', 'scroll'].includes(css.overflowY)) {
+            top = Math.max(top, r.top + ancestor.clientTop);
+            bottom = Math.min(bottom, r.top + ancestor.clientTop + ancestor.clientHeight);
+          }
+          if (['absolute', 'fixed'].includes(css.position)) {
+            skipClipUntil = null;
+            for (let parent = ancestor.parentElement; parent; parent = parent.parentElement) {
+              const style = getComputedStyle(parent);
+              if ((css.position === 'absolute' && style.position !== 'static') ||
+                  style.transform !== 'none' || style.scale !== 'none' || style.rotate !== 'none' ||
+                  style.translate !== 'none' || style.perspective !== 'none' || style.filter !== 'none' ||
+                  /layout|paint|strict|content/.test(style.contain) ||
+                  /transform|scale|rotate|translate|perspective|filter/.test(style.willChange)) {
+                skipClipUntil = parent;
+                break;
+              }
+            }
+          }
         }
         if (background === null) {
           if (css.backgroundImage !== 'none' || Number(css.opacity) < 1) backgroundComplex = true;
