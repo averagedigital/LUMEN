@@ -29,9 +29,9 @@ from .similarity import audit_cross_split
 
 ARCHETYPES = GRAMMAR_V2
 OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_partial_cutoff',
-              'sibling_occlusion', 'flex_overflow', 'grid_track_collapse', 'container_height_collapse',
+              'sibling_occlusion') + ('flex_overflow', 'grid_track_collapse', 'container_height_collapse',
               'header_collision', 'table_cell_overlap', 'dropdown_clipping', 'modal_content_overflow',
-              'input_adornment_collision', 'image_aspect_distortion', 'svg_clipping') + ('clean',) * 5 +
+              'input_adornment_collision', 'image_aspect_distortion', 'svg_clipping') * 3 + ('clean',) * 5 +
              ('benign_theme', 'benign_action', 'benign_action'))
 REQUEST_TIMEOUT_SECONDS = 60
 
@@ -260,7 +260,7 @@ def recipe(index, config, version):
     width = (320, 360, 390, 414, 768, 1024, 1280, 1440, 1920)[entropy[1] % 9]
     operator_draw = int(case_id({'seed': config['seed'], 'index': index, 'draw': 'operator'})[:8], 16)
     family_index = base // 2 if config.get('source_manifest') else base
-    return {'scene': {'seed': config['seed'] + base, 'archetype': ARCHETYPES[family_index % 20],
+    return {'scene': {'seed': int.from_bytes(entropy[4:8], 'big'), 'archetype': ARCHETYPES[family_index % 20],
                       'locale': locale, 'width': width}, 'seed': config['seed'] + index,
             'operator': OPERATORS[operator_draw % len(OPERATORS)], 'viewport': [width, 720 + entropy[2] % 4 * 80],
             'dpr': 1, 'locale': locale, 'generator_revision': version}

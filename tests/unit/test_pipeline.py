@@ -101,6 +101,19 @@ def test_scene_family_does_not_determine_positive_or_negative(variants):
     assert all(values == {True, False} for values in classes.values())
 
 
+@pytest.mark.parametrize('source_manifest', [None, 'prepared.jsonl'])
+def test_each_family_can_reach_odd_even_and_both_layout_states(source_manifest):
+    states = {family: set() for family in ARCHETYPES}
+    for base in range(1000):
+        if source_manifest and base % 2:
+            continue
+        payload = recipe(base * 10, {'variants_per_scene': 10, 'seed': 123,
+                                    'source_manifest': source_manifest}, 'v3')
+        scene = payload['scene']
+        states[scene['archetype']].add((scene['seed'] % 2, scene['seed'] // 3 % 2))
+    assert all(values == {(0, 0), (0, 1), (1, 0), (1, 1)} for values in states.values())
+
+
 def test_prepared_source_html_is_shared_and_resume_does_not_duplicate(tmp_path):
     store = Store(tmp_path / 'run')
     path = tmp_path / 'source.jsonl'
