@@ -23,7 +23,7 @@ docker run --rm --init lumen-data lumen-data --help
 {"mode":"offline-replay","seeds":[{"id":"example","url":"https://example.com/","scope":"/","family":"content","allowed_hosts":["example.com"],"license":"unknown"}],"max_pages_per_project":5,"max_depth":1,"concurrency":2,"requests_per_minute":20,"domain_delay_seconds":2}
 ```
 
-Сборщик выполняет JS, ждёт видимого содержимого и завершения сетевой загрузки
+В режиме `offline-replay` сборщик выполняет JS, ждёт видимого содержимого и завершения сетевой загрузки
 (до 15 с на каждое условие), сохраняет ресурсы и принимает только точное offline-воспроизведение.
 Обход учитывает robots.txt, ограничен origin и `scope`; query, fragment и маршруты выхода/удаления
 не обходятся. robots.txt запрашивается один раз на origin без повторов (15 с, до 512 КиБ).
