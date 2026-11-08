@@ -49,7 +49,8 @@ test('collector captures JS, obeys robots, isolates contexts, bounds routes and 
     if(path==='/app')return res.end(style+'<h1 id="title"></h1><script>document.cookie="marker=first";document.getElementById("title").textContent="JS dashboard"</script>'+['0-blocked','settings','tables','extra'].map(p=>`<a href="/app/${p}">${p}</a>`).join('')+'<a href="/outside">Outside</a><a href="/app?token=private">Query</a>');
     if(path==='/other')return res.end(style+'<h1 id="title"></h1><script>setTimeout(()=>{document.getElementById("title").textContent=document.cookie.includes("marker=first")?"context leak":"Isolated dashboard"},200)</script>');
     if(path==='/fail'){res.statusCode=503;return res.end('unavailable');}
-    if(path==='/live')return res.end(style+'<style>.label{display:block;width:max-content;white-space:nowrap}</style><h1>Live dashboard</h1><canvas width="80" height="80"></canvas><span class="label">Save account settings</span><script>const c=document.querySelector("canvas").getContext("2d");c.fillStyle="red";c.fillRect(0,0,80,80)</script>');
+    // Keep every seeded clipping edge above the importer's eight-pixel signal floor.
+    if(path==='/live')return res.end(style+'<style>.label{display:block;width:max-content;white-space:nowrap}h1{font-size:20px}</style><h1>MMMMMMMMMM</h1><canvas width="80" height="80"></canvas><span class="label">MMMMMMMMMM</span><script>const c=document.querySelector("canvas").getContext("2d");c.fillStyle="red";c.fillRect(0,0,80,80)</script>');
     res.end(style+'<h1>Settings</h1>');
   });
   await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -121,7 +122,13 @@ test('collector captures JS, obeys robots, isolates contexts, bounds routes and 
     const imported=await promisify(execFile)('python',['-m','lumen_data.cli','sources','import-live',
       '--manifest',join(liveOutput,'live-manifest.jsonl'),'--assets',join(liveOutput,'assets'),'--run',liveRun],
       {env:process.env,timeout:60000,maxBuffer:2**20});
-    assert.equal(JSON.parse(imported.stdout).accepted,6);
+    let diagnostic=imported.stdout;
+    if(JSON.parse(imported.stdout).accepted!==6){
+      diagnostic=(await promisify(execFile)('python',['-c',
+        'import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); print(db.execute("SELECT status,result FROM tasks").fetchall())',join(liveRun,'state.sqlite')],
+        {env:process.env,timeout:10000,maxBuffer:2**20})).stdout;
+    }
+    assert.equal(JSON.parse(imported.stdout).accepted,6,diagnostic);
     const exported=await promisify(execFile)('python',['-m','lumen_data.cli','export','--run',liveRun,
       '--output',liveExport,'--format','yolo-singleclass'],{env:process.env,timeout:60000,maxBuffer:2**20});
     assert.equal(JSON.parse(exported.stdout).capture_modes['live-session'],6);
