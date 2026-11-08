@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
 import {snapshot} from '../../browser/snapshot.ts';
+import {validate} from '../../browser/validate.ts';
 
 for (const position of ['absolute', 'fixed']) for (const containing of [false, true]) {
   test(`${position}: overflow clips only at or above its containing block (${containing})`, async () => {
@@ -22,3 +23,20 @@ for (const position of ['absolute', 'fixed']) for (const containing of [false, t
     } finally {await browser.close();}
   });
 }
+
+for (const fixed of [false,true]) test(`vertical viewport crossing distinguishes flow from fixed content (${fixed})`,async()=>{
+  const browser=await chromium.launch();
+  try {
+    const page=await browser.newPage({viewport:{width:800,height:600}});
+    await page.setContent(`<body style="margin:32px;font:20px Arial;background:white;color:#111"><div style="height:540px"></div><span style="${fixed?'position:fixed;top:572px':''}">Save settings</span></body>`);
+    const before=await snapshot(page);
+    assert.equal(before[0].fullyInViewport,true);
+    await page.evaluate(fixed=>{
+      if(fixed) document.querySelector('span')!.style.top='590px';
+      else document.querySelector('div')!.style.height='558px';
+    },fixed);
+    const findings=validate(before,await snapshot(page),[800,600],1);
+    if(fixed) assert.ok(findings.some(f=>f.symptom==='viewport_partial_cutoff'));
+    else assert.deepEqual(findings,[]);
+  } finally {await browser.close();}
+});

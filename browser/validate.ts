@@ -23,7 +23,8 @@ export function validate(before: ElementState[], after: ElementState[], viewport
       symptom = state.visibleRatioX < state.visibleRatioY ? 'text_clip_x' : 'text_clip_y';
     } else if (state.contrast !== null && old.contrast !== null && old.contrast >= 4.5 && state.contrast < 2) {
       symptom = 'text_contrast_failure'; family = 'readability';
-    } else if (!state.fullyInViewport && r.x < viewport[0] && r.x + r.width > 0 && r.y < viewport[1] && r.y + r.height > 0) {
+    } else if (!state.fullyInViewport && r.x < viewport[0] && r.x + r.width > 0 && r.y < viewport[1] && r.y + r.height > 0 &&
+        (r.x < 0 || r.x + r.width > viewport[0] || state.viewportBound)) {
       symptom = 'viewport_partial_cutoff'; family = 'layout';
     } else if (state.hitRatio < .8 && state.hitRatio > 0) {
       symptom = 'sibling_occlusion'; family = 'occlusion';
