@@ -17,3 +17,6 @@ artifacts/
 .internal/
 docs/DEVLOG.md
 docs/HANDOFF.md
+
+/AGENTS.md
+/docs/solutions/

@@ -11,3 +11,9 @@ artifacts
 *.sqlite*
 *.log
 ._*
+
+.internal
+AGENTS.md
+docs/DEVLOG.md
+docs/HANDOFF.md
+docs/solutions
