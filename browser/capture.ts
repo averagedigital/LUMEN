@@ -9,6 +9,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { REALISTIC_OPERATORS, TEXT_SYMPTOMS, discoverRealistic, applyRealistic } from './realistic_mutations.ts';
+import { COMPOSITE_OPERATORS, applyComposite } from './composite_mutations.ts';
 
 export type Request = { html: string; operator: string; seed: number; viewport: [number, number]; dpr: number; locale?: string; annotations?: boolean; initialModal?: string;
   assets?: Record<string, {sha256: string; content_type: string}> };
@@ -126,7 +127,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const componentsBefore = await componentSnapshot(page, discoverLayouts);
     const componentOperator = COMPONENT_OPERATORS.some(name => name === request.operator);
     const componentCandidates = discoverComponent(componentsBefore, request.operator);
-    const realisticOperator = REALISTIC_OPERATORS.some(name => name === request.operator);
+    const compositeOperator = COMPOSITE_OPERATORS.includes(request.operator);
+    const realisticOperator = compositeOperator || REALISTIC_OPERATORS.some(name => name === request.operator);
     const candidates = realisticOperator ? await discoverRealistic(page, before, request.operator) : discover(before, request.operator);
     const baselineProblems = textProblems(before, viewport);
     if (baselineProblems.length) return {status: 'invalid_baseline', issues: [], evidence: baselineProblems};
@@ -160,6 +162,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       interaction = {origin: 'synthetic', action: 'click', element_id: elementId};
     } else if (componentOperator) {
       receipt = await applyComponent(page, operator, componentCandidates[seed % componentCandidates.length], componentsBefore, seed);
+    } else if (compositeOperator) {
+      receipt = await applyComposite(page, operator, candidates[seed % candidates.length], before, viewport, dpr);
     } else if (realisticOperator) {
       receipt = await applyRealistic(page, operator, candidates[seed % candidates.length], before, viewport, dpr);
     } else if (operator !== 'clean') {

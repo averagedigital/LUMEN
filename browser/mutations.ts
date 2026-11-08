@@ -3,9 +3,10 @@ import type { ElementState } from './snapshot.ts';
 import { COMPONENT_OPERATORS } from './component_defects.ts';
 import type { Rect } from './geometry.ts';
 import { REALISTIC_OPERATORS } from './realistic_mutations.ts';
+import { COMPOSITE_OPERATORS } from './composite_mutations.ts';
 
 export const OPERATORS = ['text_clip_x', 'text_clip_y', 'text_contrast_failure',
-  'viewport_partial_cutoff', 'sibling_occlusion', ...COMPONENT_OPERATORS, ...REALISTIC_OPERATORS, 'clean', 'benign_theme', 'benign_action'] as const;
+  'viewport_partial_cutoff', 'sibling_occlusion', ...COMPONENT_OPERATORS, ...REALISTIC_OPERATORS, ...COMPOSITE_OPERATORS, 'clean', 'benign_theme', 'benign_action'] as const;
 export type Operator = typeof OPERATORS[number];
 export type Receipt = { operator: string; target: string; params: Record<string, unknown>; cause_region_css: Rect };
 

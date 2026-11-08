@@ -36,7 +36,10 @@ REALISTIC_OPERATORS = ('font_size_regression', 'nowrap_regression', 'word_break_
                        'table_fixed_layout_regression', 'dropdown_ancestor_overflow',
                        'image_object_fit_regression', 'svg_viewbox_removal',
                        'containing_block_removal', 'stacking_context_regression',
-                       'flex_min_width_regression', 'grid_min_content_regression')
+                       'flex_min_width_regression', 'grid_min_content_regression',
+                       'compound_font_letter', 'compound_font_indent', 'compound_font_offset', 'compound_font_padding',
+                       'compound_letter_indent', 'compound_letter_offset', 'compound_letter_padding',
+                       'compound_indent_offset', 'compound_indent_padding', 'compound_offset_padding')
 OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_partial_cutoff',
               'sibling_occlusion') + ('flex_overflow', 'grid_track_collapse', 'container_height_collapse',
               'header_collision', 'table_cell_overlap', 'dropdown_clipping', 'modal_content_overflow',

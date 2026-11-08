@@ -69,7 +69,10 @@ def test_component_operators_are_scheduled_without_removing_text_operators():
         'flex_wrap_regression', 'header_negative_margin', 'table_fixed_layout_regression',
         'dropdown_ancestor_overflow', 'image_object_fit_regression', 'svg_viewbox_removal',
         'containing_block_removal', 'stacking_context_regression',
-        'flex_min_width_regression', 'grid_min_content_regression'}
+        'flex_min_width_regression', 'grid_min_content_regression',
+        'compound_font_letter', 'compound_font_indent', 'compound_font_offset', 'compound_font_padding',
+        'compound_letter_indent', 'compound_letter_offset', 'compound_letter_padding',
+        'compound_indent_offset', 'compound_indent_padding', 'compound_offset_padding'}
 
 
 def test_cause_region_and_visible_scenario_metadata_are_separate_from_issue_boxes():
