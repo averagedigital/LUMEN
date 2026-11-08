@@ -67,7 +67,9 @@ def test_component_operators_are_scheduled_without_removing_text_operators():
         'letter_spacing_regression', 'line_height_regression', 'font_family_regression',
         'text_indent_regression', 'relative_offset_regression', 'padding_box_regression',
         'flex_wrap_regression', 'header_negative_margin', 'table_fixed_layout_regression',
-        'dropdown_ancestor_overflow', 'image_object_fit_regression', 'svg_viewbox_removal'}
+        'dropdown_ancestor_overflow', 'image_object_fit_regression', 'svg_viewbox_removal',
+        'containing_block_removal', 'stacking_context_regression',
+        'flex_min_width_regression', 'grid_min_content_regression'}
 
 
 def test_cause_region_and_visible_scenario_metadata_are_separate_from_issue_boxes():

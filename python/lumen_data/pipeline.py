@@ -34,7 +34,9 @@ REALISTIC_OPERATORS = ('font_size_regression', 'nowrap_regression', 'word_break_
                        'relative_offset_regression', 'padding_box_regression',
                        'flex_wrap_regression', 'header_negative_margin',
                        'table_fixed_layout_regression', 'dropdown_ancestor_overflow',
-                       'image_object_fit_regression', 'svg_viewbox_removal')
+                       'image_object_fit_regression', 'svg_viewbox_removal',
+                       'containing_block_removal', 'stacking_context_regression',
+                       'flex_min_width_regression', 'grid_min_content_regression')
 OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_partial_cutoff',
               'sibling_occlusion') + ('flex_overflow', 'grid_track_collapse', 'container_height_collapse',
               'header_collision', 'table_cell_overlap', 'dropdown_clipping', 'modal_content_overflow',

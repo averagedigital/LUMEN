@@ -3,7 +3,9 @@ import {snapshot, type ElementState} from './snapshot.ts';
 import {validate, textProblems} from './validate.ts';
 import {componentSnapshot, componentBaselineProblems} from './component_defects.ts';
 
-export const REALISTIC_OPERATORS = ['font_size_regression', 'nowrap_regression', 'word_break_regression',
+const CONTEXTUAL_OPERATORS = ['containing_block_removal', 'stacking_context_regression',
+  'flex_min_width_regression', 'grid_min_content_regression'] as const;
+export const REALISTIC_OPERATORS = [...CONTEXTUAL_OPERATORS, 'font_size_regression', 'nowrap_regression', 'word_break_regression',
   'letter_spacing_regression', 'line_height_regression', 'font_family_regression',
   'text_indent_regression', 'relative_offset_regression', 'padding_box_regression'] as const;
 export const TEXT_SYMPTOMS = ['text_clip_x', 'text_clip_y', 'viewport_partial_cutoff', 'sibling_occlusion'];
@@ -14,6 +16,15 @@ export async function discoverRealistic(page: Page, states: ElementState[], oper
     const el = document.querySelector<HTMLElement>(`[data-lumen-id="${CSS.escape(id)}"]`);
     if (!el) return false;
     const css = getComputedStyle(el);
+    const parent = el.parentElement;
+    if (parent && parent !== document.body) {
+      const container = getComputedStyle(parent);
+      if (operator === 'containing_block_removal') return css.position === 'absolute' && container.position === 'relative';
+      if (operator === 'stacking_context_regression') return css.position !== 'static' && Number(css.zIndex) > 0 && container.isolation === 'auto';
+      if (operator === 'flex_min_width_regression') return ['flex', 'inline-flex'].includes(container.display) && css.minWidth === '0px';
+      if (operator === 'grid_min_content_regression') return container.display === 'grid' && parent.firstElementChild === el && /^\d+(?:\.\d+)?px(?: \d+(?:\.\d+)?px)+$/.test(container.gridTemplateColumns);
+    }
+    if (['containing_block_removal', 'stacking_context_regression', 'flex_min_width_regression', 'grid_min_content_regression'].includes(operator)) return false;
     let clippedAncestor = false;
     for (let parent: HTMLElement | null = el; parent && parent !== document.body; parent = parent.parentElement) {
       const style = getComputedStyle(parent);
@@ -31,6 +42,28 @@ export async function discoverRealistic(page: Page, states: ElementState[], oper
 
 export async function applyRealistic(page: Page, operator: string, target: ElementState,
   before: ElementState[], viewport: [number, number], dpr: number) {
+  if (CONTEXTUAL_OPERATORS.some(name => name === operator)) {
+    const cause = await page.evaluate(({id, operator}) => {
+      const text = document.querySelector<HTMLElement>(`[data-lumen-id="${CSS.escape(id)}"]`);
+      if (!text?.parentElement) throw new Error('contextual mutation target missing');
+      const el = operator === 'flex_min_width_regression' ? text : text.parentElement;
+      const box = el.getBoundingClientRect();
+      if (operator === 'containing_block_removal') el.style.position = 'static';
+      else if (operator === 'stacking_context_regression') el.style.isolation = 'isolate';
+      else if (operator === 'flex_min_width_regression') el.style.minWidth = 'auto';
+      else {
+        const columns = getComputedStyle(el).gridTemplateColumns.split(' ');
+        columns[0] = 'min-content';
+        el.style.gridTemplateColumns = columns.join(' ');
+      }
+      return {x:box.x, y:box.y, width:box.width, height:box.height};
+    }, {id:target.id, operator});
+    const findings = validate(before, await snapshot(page), viewport, dpr);
+    const value = findings.some(f => TEXT_SYMPTOMS.includes(f.symptom)) ? 1 : null;
+    return {operator, mechanism_id:operator, target:target.id, params:{value},
+      cause_region_css:cause, symptoms:[] as string[], origin:'synthetic',
+      search:{strategy:'discrete', attempts:1, limit:1, valid_near_boundary:null, broken_near_boundary:value}};
+  }
   const initial = await page.evaluate(id => {
     const el = document.querySelector<HTMLElement>(`[data-lumen-id="${CSS.escape(id)}"]`);
     if (!el) throw new Error('mutation target missing');
