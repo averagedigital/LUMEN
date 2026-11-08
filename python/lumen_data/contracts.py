@@ -92,6 +92,10 @@ def validate_case(record, public_safe=False):
         raise ValueError(f'missing fields: {sorted(required - record.keys())}')
     if record['schema_version'] != 'lumen.case.v1':
         raise ValueError('unsupported schema')
+    if 'corpus' in record and record['corpus'] not in ('lumen-synth', 'lumen-modern', 'unclassified'):
+        raise ValueError('invalid synthetic case corpus')
+    if 'defect_origin' in record and record['defect_origin'] != 'synthetic':
+        raise ValueError('invalid synthetic defect origin')
     if not isinstance(record['case_id'], str) or not re.fullmatch('[a-f0-9]{64}', record['case_id']):
         raise ValueError('invalid case_id')
     if record['split'] != group_split(record['split_group']):

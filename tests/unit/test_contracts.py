@@ -54,6 +54,13 @@ def test_strict_case_rejects_missing_or_incomplete_evidence():
         validate_case({})
 
 
+def test_synthetic_cases_cannot_claim_wild_report_provenance():
+    record = valid_case()
+    record.update(corpus='lumen-wild', defect_origin='synthetic')
+    with pytest.raises(ValueError, match='corpus'):
+        validate_case(record)
+
+
 def valid_case():
     return {
         'schema_version': 'lumen.case.v1', 'case_id': 'a' * 64,

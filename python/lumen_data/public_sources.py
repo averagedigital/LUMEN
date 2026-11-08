@@ -107,7 +107,7 @@ def capture_sources(manifest, output, limit):
                         store.sync_directories(path.parent)
                     finally:
                         temporary.unlink(missing_ok=True)
-                record = {**result, 'html_hash': store.put(html.encode(), 'html'),
+                record = {**result, 'corpus': 'lumen-modern', 'html_hash': store.put(html.encode(), 'html'),
                           'image_hash': store.put(png), 'base_scene_id': scene_id,
                           'sidecars': sidecars,
                           **{key: candidate[key] for key in ('kind', 'source_project_id',

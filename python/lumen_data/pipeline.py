@@ -44,7 +44,8 @@ OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_p
               'sibling_occlusion') + ('flex_overflow', 'grid_track_collapse', 'container_height_collapse',
               'header_collision', 'table_cell_overlap', 'dropdown_clipping', 'modal_content_overflow',
               'input_adornment_collision', 'image_aspect_distortion', 'svg_clipping') * 3 + ('clean',) * 5 +
-             ('benign_theme', 'benign_action', 'benign_action') + REALISTIC_OPERATORS)
+             ('benign_theme', 'benign_action', 'benign_action', 'benign_near_boundary',
+              'benign_composite_control') + REALISTIC_OPERATORS)
 REQUEST_TIMEOUT_SECONDS = 60
 
 
@@ -166,6 +167,8 @@ def build_record(payload, result, assets, stats):
               'source_project_id': source['source_project_id'] if source else 'lumen-grammar', 'structural_family_id': archetype,
               'split_group': group, 'split': group_split(group), 'backend': 'browser',
               'seed': payload['seed'], 'recipe': payload, 'operator': payload['operator'],
+              'corpus': source.get('corpus', 'unclassified') if source else 'lumen-synth',
+              'defect_origin': 'synthetic',
               'capture': {'viewport_css': payload['viewport'], 'image_px': [width, height],
                           'device_scale_factor': payload['dpr'], 'browser': result['browser'],
                           'locale': payload['locale'], 'timezone': 'UTC', 'scroll': result.get('scrollBefore', [0, 0])},
@@ -281,10 +284,20 @@ def recipe(index, config, version):
     width = (320, 360, 390, 414, 768, 1024, 1280, 1440, 1920)[entropy[1] % 9]
     operator_draw = int(case_id({'seed': config['seed'], 'index': index, 'draw': 'operator'})[:8], 16)
     family_index = base // 2 if config.get('source_manifest') else base
-    return {'scene': {'seed': int.from_bytes(entropy[4:8], 'big'), 'archetype': ARCHETYPES[family_index % 20],
+    result = {'scene': {'seed': int.from_bytes(entropy[4:8], 'big'), 'archetype': ARCHETYPES[family_index % 20],
                       'locale': locale, 'width': width}, 'seed': config['seed'] + index,
             'operator': operators[operator_draw % len(operators)], 'viewport': [width, 720 + entropy[2] % 4 * 80],
             'dpr': 1, 'locale': locale, 'generator_revision': version}
+    if result['operator'] in ('benign_near_boundary', 'benign_composite_control'):
+        choices = (('font_size_regression', 'letter_spacing_regression', 'line_height_regression',
+                    'text_indent_regression', 'relative_offset_regression', 'padding_box_regression')
+                   if result['operator'] == 'benign_near_boundary' else
+                   tuple(op for op in REALISTIC_OPERATORS if op.startswith('compound_')))
+        draw = int(case_id({'seed': config['seed'], 'index': index, 'draw': 'control'})[:8], 16)
+        result['control_of'] = choices[draw % len(choices)]
+        if result['operator'] == 'benign_composite_control':
+            result['control_component'] = draw // len(choices) % 2
+    return result
 
 
 def save_result(store, task, result):
@@ -458,7 +471,7 @@ def audit_cases(store):
     store.db.execute('PRAGMA temp_store=FILE')
     store.db.execute('BEGIN')
     store.db.execute('CREATE TABLE qa_work.signatures(reference TEXT, scene TEXT, split TEXT, signature TEXT, UNIQUE(reference,scene,split))')
-    counters = {key: Counter() for key in ('operators', 'families', 'sources', 'splits', 'locales', 'viewports', 'rejections')}
+    counters = {key: Counter() for key in ('operators', 'families', 'sources', 'splits', 'locales', 'viewports', 'rejections', 'corpora', 'defect_origins')}
     defect_families, bbox_sizes, issue_counts = Counter(), Counter(), Counter()
     positives = 0
     for index, record in enumerate(store.records()):
@@ -472,6 +485,8 @@ def audit_cases(store):
         counters['operators'][record['operator']] += 1
         counters['families'][record['structural_family_id']] += 1
         counters['sources'][record['source_project_id']] += 1
+        counters['corpora'][record.get('corpus', 'unclassified')] += 1
+        counters['defect_origins'][record.get('defect_origin', 'unclassified')] += 1
         counters['splits'][record['split']] += 1
         counters['locales'][record['capture']['locale']] += 1
         counters['viewports'][str(record['capture']['image_px'])] += 1

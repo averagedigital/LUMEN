@@ -56,6 +56,23 @@ def test_source_split_group_does_not_replace_provenance_or_lineage():
     assert record['split'] == group_split(record['split_group'])
 
 
+@pytest.mark.parametrize('corpus', ['lumen-modern', 'lumen-synth', None])
+def test_mutation_origin_does_not_overwrite_source_provenance(corpus):
+    payload = recipe(0, {'variants_per_scene': 10, 'seed': 123}, 'v1')
+    provenance = {'license': 'unknown', 'revision': 'source-v1', 'origin': 'external',
+                  'public_release_status': 'research_only'}
+    payload['source'] = {'base_scene_id': 'base-one', 'source_project_id': 'external',
+        'template_lineage_id': None, 'structural_family_id': 'form', 'split_group': 'dom-v1:source',
+        'provenance': provenance, **({'corpus': corpus} if corpus else {})}
+    payload['scene'] = None
+    record = build_record(payload, {'status': 'accepted_clean', 'issues': [], 'browser': 'fixture'},
+                          dict.fromkeys(('reference', 'current', 'raw_change_mask'), 'a' * 64),
+                          {'changed_pixels': 0})
+    assert record['provenance'] == provenance
+    assert record['defect_origin'] == 'synthetic'
+    assert record['corpus'] == (corpus or 'unclassified')
+
+
 def test_component_operators_are_scheduled_without_removing_text_operators():
     from lumen_data.pipeline import OPERATORS
     positives = {op for op in OPERATORS if op != 'clean' and not op.startswith('benign_')}
@@ -73,6 +90,17 @@ def test_component_operators_are_scheduled_without_removing_text_operators():
         'compound_font_letter', 'compound_font_indent', 'compound_font_offset', 'compound_font_padding',
         'compound_letter_indent', 'compound_letter_offset', 'compound_letter_padding',
         'compound_indent_offset', 'compound_indent_padding', 'compound_offset_padding'}
+
+
+@pytest.mark.parametrize('operator', ['benign_near_boundary', 'benign_composite_control'])
+def test_control_recipes_preserve_explicit_replayable_mechanisms(operator):
+    config = {'variants_per_scene': 10, 'seed': 123, 'operators': [operator]}
+    rows = [recipe(i, config, 'v1') for i in range(100)]
+    assert rows == [recipe(i, config, 'v1') for i in range(100)]
+    assert all(r['operator'] == operator for r in rows)
+    assert len({r['control_of'] for r in rows}) == (6 if operator == 'benign_near_boundary' else 10)
+    if operator == 'benign_composite_control':
+        assert {r['control_component'] for r in rows} == {0, 1}
 
 
 def test_cause_region_and_visible_scenario_metadata_are_separate_from_issue_boxes():
