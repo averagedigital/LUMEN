@@ -146,7 +146,10 @@ export async function visitSource<T>(page: Page, request: SourceRequest,
           if(response.status>=200&&response.status<300) {
             totalPixels+=await validateRaster(response.body,contentType,abort.signal);
             if(totalPixels>64*2**20) throw new SourceRejected('source pixel budget');
-            if(['stylesheet','font','image'].includes(req.resourceType())) {
+            const imageErrorDocument=req.resourceType()==='image'&&contentType==='text/html'&&
+              /^\s*(?:<!doctype\s+html|<html(?:\s|>))/i.test(response.body.subarray(0,256).toString('utf8'));
+            // The application may replace a failed image; final DOM and replay checks decide acceptance.
+            if(['stylesheet','font','image'].includes(req.resourceType())&&!imageErrorDocument) {
               if(!contentTypes.includes(contentType)) throw new SourceRejected('unsupported source asset type');
               assetURLs.add(url);
               if(assetURLs.size>128) throw new SourceRejected('source asset count limit');

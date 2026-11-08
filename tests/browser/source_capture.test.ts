@@ -241,3 +241,29 @@ test('transparent shell text and media do not make an empty SPA ready',async()=>
     });
   }finally{await f.close();}
 });
+
+for(const handled of [true,false]){
+  test(`HTML returned for a missing avatar requires a complete rendered replacement: ${handled}`,async()=>{
+    const handler=handled?'onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{textContent:\'AB\'}))"':'';
+    const f=await fixture(`<h1>Team settings</h1><img src="/special/avatar.png" ${handler}>`,(_req,res)=>{
+      res.setHeader('content-type','text/html');res.end('<!doctype html><html><body>Application shell</body></html>');
+    });
+    try{
+      const capture=()=>captureSource(f.page,{url,allowed_hosts:['localhost'],asset_root:f.root});
+      if(!handled){await assert.rejects(capture(),/missing source images/);return;}
+      const result=await capture();
+      assert.equal(result.source_sha256,result.restored_sha256);
+      assert.ok(result.elements?.some(el=>el.tag==='span'&&el.text==='AB'&&el.state.visible));
+      assert.ok(!result.html.includes('/special/avatar.png'));
+      assert.equal(result.assets['https://localhost/special/avatar.png'],undefined);
+    }finally{await f.close();}
+  });
+}
+
+test('HTML returned for a stylesheet is still an unsupported source asset',async()=>{
+  const f=await fixture('<h1>Team settings</h1><link rel="stylesheet" href="/special/missing.css">',(_req,res)=>{
+    res.setHeader('content-type','text/html');res.end('<!doctype html><html><body>Application shell</body></html>');
+  });
+  try{await assert.rejects(captureSource(f.page,{url,allowed_hosts:['localhost'],asset_root:f.root}),/unsupported source asset type/);}
+  finally{await f.close();}
+});
