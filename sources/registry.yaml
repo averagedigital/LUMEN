@@ -1,4 +1,11 @@
 sources:
+  - id: github
+    url: https://github.com
+    role: real_bug_review_pool
+    corpus: lumen-wild
+    license: unknown
+    assets_rights: unknown
+    public_release_status: research_only
   - id: websight
     repository: HuggingFaceM4/WebSight
     config: v0.2

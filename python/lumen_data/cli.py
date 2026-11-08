@@ -35,6 +35,11 @@ def main():
     capture.add_argument('--manifest', required=True)
     capture.add_argument('--output', required=True)
     capture.add_argument('--limit', required=True, type=int)
+    github = sources.add_parser('github')
+    github.add_argument('--repository', required=True)
+    github.add_argument('--query', required=True)
+    github.add_argument('--output', required=True)
+    github.add_argument('--limit', required=True, type=int)
     plan = commands.add_parser('plan')
     plan.add_argument('--config', required=True)
     generate_command = commands.add_parser('generate')
@@ -70,6 +75,9 @@ def main():
             elif args.source_command == 'renderable':
                 from .renderable import prepare_renderable
                 result = prepare_renderable(args.manifest, args.output, args.assets)
+            elif args.source_command == 'github':
+                from .github_bugs import mine_reports
+                result = mine_reports(args.repository, args.query, args.output, args.limit)
             else:
                 from .public_sources import capture_sources
                 result = capture_sources(args.manifest, args.output, args.limit)
