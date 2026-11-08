@@ -275,6 +275,17 @@ def operator_mix(config):
     return list(operators)
 
 
+def source_slot(base, config):
+    mix = config.get('source_mix', ['grammar', 'external'] if config.get('source_manifest') else ['grammar'])
+    if (not isinstance(mix, list) or not mix or len(mix) > 100 or
+            any(kind not in ('grammar', 'external') for kind in mix) or
+            ('external' in mix and not config.get('source_manifest'))):
+        raise ValueError('invalid source mix')
+    cycles, position = divmod(base, len(mix))
+    kind = mix[position]
+    return kind, cycles * mix.count(kind) + mix[:position].count(kind)
+
+
 def recipe(index, config, version):
     operators = operator_mix(config)
     base = index // config['variants_per_scene']
@@ -283,7 +294,7 @@ def recipe(index, config, version):
     locale = ('en', 'ru', 'de', 'es', 'zh', 'ar')[entropy[0] % 6]
     width = (320, 360, 390, 414, 768, 1024, 1280, 1440, 1920)[entropy[1] % 9]
     operator_draw = int(case_id({'seed': config['seed'], 'index': index, 'draw': 'operator'})[:8], 16)
-    family_index = base // 2 if config.get('source_manifest') else base
+    _, family_index = source_slot(base, config)
     result = {'scene': {'seed': int.from_bytes(entropy[4:8], 'big'), 'archetype': ARCHETYPES[family_index % 20],
                       'locale': locale, 'width': width}, 'seed': config['seed'] + index,
             'operator': operators[operator_draw % len(operators)], 'viewport': [width, 720 + entropy[2] % 4 * 80],
@@ -358,6 +369,7 @@ def save_result(store, task, result):
 def generate(config_path, run, target=None, resume=False):
     config = yaml.safe_load(Path(config_path).read_text())
     operators = operator_mix(config)
+    source_slot(0, config)
     if config['variants_per_scene'] not in range(1, 17):
         raise ValueError('variants_per_scene must be between 1 and 16')
     worker_count = config.get('workers', 1)
@@ -374,6 +386,8 @@ def generate(config_path, run, target=None, resume=False):
     contract = {key: config[key] for key in ('seed', 'variants_per_scene', 'source_manifest')}
     contract['generator_revision'] = revision()
     contract['operators'] = operators
+    if 'source_mix' in config:
+        contract['source_mix'] = config['source_mix']
     if config.get('source_manifest'):
         with Path(config['source_manifest']).open('rb') as handle:
             contract['source_manifest_sha256'] = hashlib.file_digest(handle, 'sha256').hexdigest()
@@ -408,8 +422,9 @@ def generate(config_path, run, target=None, resume=False):
                             break
                         payload = recipe(attempts, config, contract['generator_revision'])
                         base = attempts // config['variants_per_scene']
-                        if config.get('source_manifest') and base % 2:
-                            row = store.db.execute('SELECT record FROM source_scenes ORDER BY id LIMIT 1 OFFSET ?', (base // 2,)).fetchone()
+                        kind, source_index = source_slot(base, config)
+                        if kind == 'external':
+                            row = store.db.execute('SELECT record FROM source_scenes ORDER BY id LIMIT 1 OFFSET ?', (source_index,)).fetchone()
                             if not row:
                                 source_exhausted = True
                                 break

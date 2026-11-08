@@ -13,6 +13,21 @@ from lumen_data.storage import Store
 from test_pipeline import png
 
 
+def test_source_mix_weights_advance_each_source_without_skipping_scenes():
+    config = {'source_manifest': 'sources.jsonl', 'source_mix': ['grammar', 'grammar', 'grammar', 'external']}
+    assert [pipeline.source_slot(i, config) for i in range(8)] == [
+        ('grammar', 0), ('grammar', 1), ('grammar', 2), ('external', 0),
+        ('grammar', 3), ('grammar', 4), ('grammar', 5), ('external', 1)]
+    assert pipeline.source_slot(5, {'source_manifest': None}) == ('grammar', 5)
+    assert pipeline.source_slot(5, {'source_manifest': 'sources.jsonl'}) == ('external', 2)
+
+
+@pytest.mark.parametrize('mix', [[], ['unknown'], 'grammar', ['external']])
+def test_invalid_or_unavailable_source_mix_is_explicit(mix):
+    with pytest.raises(ValueError, match='source mix'):
+        pipeline.source_slot(0, {'source_manifest': None, 'source_mix': mix})
+
+
 def fake_workers(monkeypatch, workers, fatal=None):
     state = {'active': 0, 'peak': 0, 'closed': 0, 'fatal': fatal}
     lock = threading.Lock()
