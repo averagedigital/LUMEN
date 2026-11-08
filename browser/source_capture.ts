@@ -198,6 +198,14 @@ export async function captureSource(page: Page, request: SourceRequest) {
     }
     const reference = await page.screenshot({animations:'disabled',caret:'hide',timeout:15000});
     if (!reference.equals(await page.screenshot({animations:'disabled',caret:'hide',timeout:15000}))) throw new SourceRejected('unstable source pixels');
+    await page.evaluate(() => {
+      for (const style of document.querySelectorAll('style')) {
+        if (!style.sheet) continue;
+        const rules = Array.from(style.sheet.cssRules).map(rule => rule.cssText).join('\n');
+        if (style.sheet.disabled) style.media = 'not all';
+        style.textContent = rules;
+      }
+    });
     const html = await page.content();
     if (Buffer.byteLength(html) > 2_000_000) throw new SourceRejected('source HTML size limit');
     const dpr = await page.evaluate(() => devicePixelRatio);

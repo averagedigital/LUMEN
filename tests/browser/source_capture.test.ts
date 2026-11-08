@@ -101,6 +101,28 @@ test('public source records annotation node limit without losing an exact offlin
   } finally {await f.close();}
 });
 
+test('public source preserves dynamically inserted CSSOM rules offline',async()=>{
+  const f=await fixture('<h1>Account settings</h1><script>const style=document.createElement("style");document.head.append(style);style.sheet.insertRule("h1{color:rgb(10,80,120);font-size:48px;margin-left:90px}")</script>');
+  try {
+    const result=await captureSource(f.page,{url,allowed_hosts:['localhost'],asset_root:f.root});
+    assert.equal(result.source_sha256,result.restored_sha256);
+    assert.ok(result.html.includes('rgb(10, 80, 120)'));
+    assert.ok(!result.html.includes('<script'));
+  } finally {await f.close();}
+});
+
+test('CSSOM serialization preserves a disabled stylesheet without changing source pixels',async()=>{
+  const f=await fixture('<h1>Account settings</h1><style>h1{color:red;font-size:80px}</style><script>document.querySelector("style").sheet.disabled=true</script>');
+  try {
+    const expected=await f.context.newPage();
+    await expected.setContent('<h1>Account settings</h1>');
+    const pixels=await expected.screenshot();
+    const result=await captureSource(f.page,{url,allowed_hosts:['localhost'],asset_root:f.root});
+    assert.ok(result.reference.equals(pixels));
+    assert.equal(result.source_sha256,result.restored_sha256);
+  } finally {await f.close();}
+});
+
 test('public source never sends a chained redirected request to an unapproved host',async()=>{
   let forbidden=0;
   const f=await fixture('<h1>Settings</h1><img src="/special-redirect">',(req,res)=>{
