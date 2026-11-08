@@ -170,6 +170,8 @@ def build_record(payload, result, assets, stats):
               'corpus': source.get('corpus', 'unclassified') if source else 'lumen-synth',
               'defect_origin': 'synthetic',
               'capture': {'viewport_css': payload['viewport'], 'image_px': [width, height],
+                          'orientation': 'landscape' if width > height else 'portrait' if height > width else 'square',
+                          **({'resize_path': payload['resize_path']} if 'resize_path' in payload else {}),
                           'device_scale_factor': payload['dpr'], 'browser': result['browser'],
                           'locale': payload['locale'], 'timezone': 'UTC', 'scroll': result.get('scrollBefore', [0, 0])},
               'assets': assets, 'has_change': stats['changed_pixels'] > 0,
@@ -286,8 +288,33 @@ def source_slot(base, config):
     return kind, cycles * mix.count(kind) + mix[:position].count(kind)
 
 
+def viewport_sweep(config):
+    if 'viewport_sweep' not in config:
+        return [None]
+    states = config['viewport_sweep']
+    if not isinstance(states, list) or not 1 <= len(states) <= 64:
+        raise ValueError('invalid viewport sweep')
+    for state in states:
+        if (not isinstance(state, dict) or set(state) - {'viewport', 'dpr', 'resize_path'} or
+                type(state.get('dpr')) is not int or state['dpr'] not in (1, 2)):
+            raise ValueError('invalid viewport sweep state')
+        path = state.get('resize_path', [state.get('viewport')])
+        if not isinstance(path, list) or not 1 <= len(path) <= 8:
+            raise ValueError('invalid viewport sweep resize path')
+        for size in [state.get('viewport'), *path]:
+            if (not isinstance(size, list) or len(size) != 2 or
+                    any(type(v) is not int or not 240 <= v <= 3840 for v in size) or
+                    size[0] * size[1] * state['dpr'] ** 2 > 16_777_216):
+                raise ValueError('invalid viewport sweep dimensions')
+    if len({canonical(state) for state in states}) != len(states):
+        raise ValueError('duplicate viewport sweep state')
+    return states
+
+
 def recipe(index, config, version):
     operators = operator_mix(config)
+    sweep = viewport_sweep(config)
+    index, state_index = divmod(index, len(sweep))
     base = index // config['variants_per_scene']
     # Separate draws avoid correlating labels with scene families or screen sizes.
     entropy = bytes.fromhex(case_id({'seed': config['seed'], 'base': base}))
@@ -299,6 +326,8 @@ def recipe(index, config, version):
                       'locale': locale, 'width': width}, 'seed': config['seed'] + index,
             'operator': operators[operator_draw % len(operators)], 'viewport': [width, 720 + entropy[2] % 4 * 80],
             'dpr': 1, 'locale': locale, 'generator_revision': version}
+    if sweep[state_index] is not None:
+        result.update(sweep[state_index])
     if result['operator'] in ('benign_near_boundary', 'benign_composite_control'):
         choices = (('font_size_regression', 'letter_spacing_regression', 'line_height_regression',
                     'text_indent_regression', 'relative_offset_regression', 'padding_box_regression')
@@ -369,6 +398,7 @@ def save_result(store, task, result):
 def generate(config_path, run, target=None, resume=False):
     config = yaml.safe_load(Path(config_path).read_text())
     operators = operator_mix(config)
+    sweep = viewport_sweep(config)
     source_slot(0, config)
     if config['variants_per_scene'] not in range(1, 17):
         raise ValueError('variants_per_scene must be between 1 and 16')
@@ -388,6 +418,8 @@ def generate(config_path, run, target=None, resume=False):
     contract['operators'] = operators
     if 'source_mix' in config:
         contract['source_mix'] = config['source_mix']
+    if 'viewport_sweep' in config:
+        contract['viewport_sweep'] = sweep
     if config.get('source_manifest'):
         with Path(config['source_manifest']).open('rb') as handle:
             contract['source_manifest_sha256'] = hashlib.file_digest(handle, 'sha256').hexdigest()
@@ -421,7 +453,7 @@ def generate(config_path, run, target=None, resume=False):
                         if attempts >= config['max_attempts']:
                             break
                         payload = recipe(attempts, config, contract['generator_revision'])
-                        base = attempts // config['variants_per_scene']
+                        base = attempts // len(sweep) // config['variants_per_scene']
                         kind, source_index = source_slot(base, config)
                         if kind == 'external':
                             row = store.db.execute('SELECT record FROM source_scenes ORDER BY id LIMIT 1 OFFSET ?', (source_index,)).fetchone()

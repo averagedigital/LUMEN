@@ -12,6 +12,7 @@ import { REALISTIC_OPERATORS, BOUNDARY_OPERATORS, TEXT_SYMPTOMS, discoverRealist
 import { COMPOSITE_OPERATORS, applyComposite } from './composite_mutations.ts';
 
 export type Request = { html: string; operator: string; seed: number; viewport: [number, number]; dpr: number; locale?: string; annotations?: boolean; initialModal?: string;
+  resize_path?: number[][];
   control_of?: string; control_component?: 0 | 1;
   assets?: Record<string, {sha256: string; content_type: string}> };
 export type CaptureResult = {
@@ -22,6 +23,7 @@ export type CaptureResult = {
   interaction?: {origin: string; action: string; element_id: string};
   scrollBefore?: number[]; scrollAfter?: number[];
   scenario_tags?: string[];
+  resize_trace?: number[][];
 };
 
 async function stable(page: Page): Promise<Buffer | null> {
@@ -61,8 +63,14 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
   if (!Number.isSafeInteger(seed) || seed < 0 || html.length > 2_000_000 || ![1, 2].includes(dpr) ||
       viewport.length !== 2 || viewport.some(x => !Number.isInteger(x) || x < 240 || x > 3840) ||
       viewport[0] * viewport[1] * dpr ** 2 > 16_777_216) throw new Error('invalid capture request');
+  if (request.resize_path !== undefined && (!Array.isArray(request.resize_path) ||
+      request.resize_path.length < 1 || request.resize_path.length > 8 ||
+      request.resize_path.some(size => !Array.isArray(size) || size.length !== 2 ||
+        size.some(x => !Number.isInteger(x) || x < 240 || x > 3840) ||
+        size[0] * size[1] * dpr ** 2 > 16_777_216))) throw new Error('invalid capture request');
+  const initial = request.resize_path?.[0] ?? viewport;
   const started = performance.now();
-  const context = await browser.newContext({viewport: {width: viewport[0], height: viewport[1]},
+  const context = await browser.newContext({viewport: {width: initial[0], height: initial[1]},
     deviceScaleFactor: dpr, locale: request.locale ?? 'en-US', timezoneId: 'UTC',
     colorScheme: 'light', reducedMotion: 'reduce', serviceWorkers: 'block', javaScriptEnabled: false,
     acceptDownloads: false});
@@ -90,6 +98,15 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
     await page.setContent(html, {waitUntil: 'load', timeout: 15000});
+    if (request.resize_path) {
+      for (const size of [...request.resize_path.slice(1), viewport]) {
+        await page.setViewportSize({width: size[0], height: size[1]});
+        await page.evaluate(async () => { await document.fonts.ready; });
+      }
+      await page.evaluate(async () => {
+        await Promise.all(Array.from(document.images).map(image => image.decode().catch(() => {})));
+      });
+    }
     await page.evaluate(async () => { await document.fonts.ready; });
     for (const body of fonts.values()) {
       const valid = await page.evaluate(async encoded => {
@@ -227,6 +244,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     else if (!changed) status = 'no_visible_effect';
     return {status, issues, receipt, reference: reference.toString('base64'), current: current.toString('base64'),
       rollback: true, browser: browser.version(), elements, statesAfter, interaction, scrollBefore, scrollAfter, scenario_tags,
+      ...(request.resize_path ? {resize_trace: [...request.resize_path, viewport]} : {}),
       timings: {baseline: captured - started,
         mutation_capture_oracle: verified - captured, rollback: performance.now() - verified}};
   } catch (error) {

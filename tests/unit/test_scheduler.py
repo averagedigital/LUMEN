@@ -28,6 +28,33 @@ def test_invalid_or_unavailable_source_mix_is_explicit(mix):
         pipeline.source_slot(0, {'source_manifest': None, 'source_mix': mix})
 
 
+def test_viewport_sweep_reuses_scene_mutation_and_split_at_every_capture_state():
+    states = [{'viewport': [390, 844], 'dpr': 1}, {'viewport': [844, 390], 'dpr': 2},
+              {'viewport': [768, 1024], 'dpr': 1, 'resize_path': [[1280, 720], [390, 844]]}]
+    config = {'seed': 42, 'variants_per_scene': 2, 'viewport_sweep': states}
+    rows = [pipeline.recipe(i, config, 'v1') for i in range(6)]
+    assert all(row['scene'] == rows[0]['scene'] for row in rows)
+    assert [(r['viewport'], r['dpr']) for r in rows[:3]] == [(s['viewport'], s['dpr']) for s in states]
+    assert len({row['seed'] for row in rows[:3]}) == len({row['operator'] for row in rows[:3]}) == 1
+    assert rows[2]['resize_path'] == states[2]['resize_path']
+    assert pipeline.recipe(6, config, 'v1')['scene'] != rows[0]['scene']
+    records = [pipeline.build_record(r, {'status': 'accepted_clean', 'issues': [], 'browser': 'fixture'},
+               dict.fromkeys(('reference', 'current', 'raw_change_mask'), 'a' * 64), {'changed_pixels': 0}) for r in rows]
+    assert len({r['base_scene_id'] for r in records}) == len({r['split'] for r in records}) == 1
+    assert records[1]['capture']['image_px'] == [1688, 780]
+    assert records[1]['capture']['orientation'] == 'landscape'
+
+
+@pytest.mark.parametrize('states', [[], [{'viewport': [239, 720], 'dpr': 1}],
+    [{'viewport': [390, 720], 'dpr': 3}], [{'viewport': [3840, 3840], 'dpr': 2}],
+    [{'viewport': [390, 720], 'dpr': 1, 'resize_path': []}],
+    [{'viewport': [390, 720], 'dpr': 1, 'resize_path': [[0, 720]]}],
+    [{'viewport': [390, 720], 'dpr': 1}, {'dpr': 1, 'viewport': [390, 720]}]])
+def test_invalid_sweep_fails_before_generation(states):
+    with pytest.raises(ValueError, match='viewport sweep'):
+        pipeline.recipe(0, {'seed': 42, 'variants_per_scene': 2, 'viewport_sweep': states}, 'v1')
+
+
 def fake_workers(monkeypatch, workers, fatal=None):
     state = {'active': 0, 'peak': 0, 'closed': 0, 'fatal': fatal}
     lock = threading.Lock()
@@ -200,6 +227,20 @@ def test_resume_rejects_changed_operator_order_and_weights(tmp_path, monkeypatch
     run = tmp_path / 'run'
     pipeline.generate(path, run)
     settings['operators'] = ['font_size_regression', 'clean']
+    path.write_text(yaml.safe_dump(settings))
+    with pytest.raises(ValueError, match='contract changed'):
+        pipeline.generate(path, run, resume=True)
+
+
+def test_resume_rejects_changed_viewport_sequence(tmp_path, monkeypatch):
+    fake_workers(monkeypatch, 1)
+    path = config(tmp_path, 1, target=1, max_attempts=1)
+    settings = yaml.safe_load(path.read_text())
+    settings['viewport_sweep'] = [{'viewport': [390, 844], 'dpr': 1}, {'viewport': [844, 390], 'dpr': 2}]
+    path.write_text(yaml.safe_dump(settings))
+    run = tmp_path / 'run'
+    pipeline.generate(path, run)
+    settings['viewport_sweep'].reverse()
     path.write_text(yaml.safe_dump(settings))
     with pytest.raises(ValueError, match='contract changed'):
         pipeline.generate(path, run, resume=True)
