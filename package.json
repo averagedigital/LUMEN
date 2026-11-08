@@ -3,12 +3,23 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.18.0 <23" },
+  "engines": {
+    "node": ">=22.18.0 <23"
+  },
   "scripts": {
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/browser/*.test.ts",
     "worker": "node --experimental-strip-types browser/worker.ts"
   },
-  "dependencies": { "playwright": "1.65.0" },
-  "devDependencies": { "typescript": "5.9.3", "@types/node": "22.19.0" }
+  "dependencies": {
+    "@crawlee/playwright": "3.18.2",
+    "playwright": "1.65.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.0",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "minimatch": "11.0.1"
+  }
 }

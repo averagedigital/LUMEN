@@ -85,11 +85,12 @@ async function validateRaster(body:Buffer, contentType:string, signal:AbortSigna
 function permitted(url: string, hosts: string[]) {
   const parsed = new URL(url);
   return parsed.protocol === 'https:' && !parsed.username && !parsed.password &&
-    (!parsed.port || parsed.port === '443') && hosts.includes(parsed.hostname) &&
+    hosts.includes(parsed.host) &&
     !Array.from(parsed.searchParams.keys()).some(key => /token|secret|password|credential|signature|api.?key/i.test(key));
 }
 
-async function saveAsset(root: string, body: Buffer) {
+export async function saveAsset(root: string, body: Buffer) {
+  if(body.length>8*2**20)throw new SourceRejected('source asset size limit');
   const digest = sha(body), path = join(root, digest);
   const disk = await statfs(root);
   if (disk.bavail * disk.bsize < 40 * 2**30) throw new Error('source disk reserve');
@@ -110,7 +111,7 @@ async function saveAsset(root: string, body: Buffer) {
   return digest;
 }
 
-export async function captureSource(page: Page, request: SourceRequest) {
+export async function captureSource(page: Page, request: SourceRequest, onReady?: (page: Page) => Promise<void>) {
   if (!permitted(request.url, request.allowed_hosts)) throw new SourceRejected('unapproved source URL');
   const viewport = page.viewportSize();
   if (!viewport || viewport.width * viewport.height > 4_194_304) throw new SourceRejected('source viewport limit');
@@ -168,6 +169,7 @@ export async function captureSource(page: Page, request: SourceRequest) {
     await page.evaluate(async () => {await document.fonts.ready;});
     await page.waitForTimeout(1000);
     if(transportError) throw transportError;
+    if(onReady) await onReady(page);
     await page.evaluate(() => {
       const source=document.baseURI;
       document.querySelectorAll('script,noscript,iframe,object,embed,meta[http-equiv],input[type="hidden"],link[as="script"]').forEach(el => el.remove());

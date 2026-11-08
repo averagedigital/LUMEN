@@ -16,6 +16,22 @@ docker run --rm --init lumen-data lumen-data --help
 
 Команды CLI: `sources`, `generate`, `qa`, `review`, `export`, `reproduce`.
 
+Обход публичных сайтов: `node --experimental-strip-types browser/collector.ts CONFIG.json OUTPUT`.
+Требуются Linux с `flock` и установленные npm-зависимости. Конфигурация:
+
+```json
+{"seeds":[{"id":"example","url":"https://example.com/","scope":"/","family":"content","allowed_hosts":["example.com"],"license":"unknown"}],"max_pages_per_project":5,"max_depth":1,"concurrency":2,"requests_per_minute":20,"domain_delay_seconds":2}
+```
+
+Сборщик выполняет JS, сохраняет ресурсы и принимает только точное offline-воспроизведение.
+Обход учитывает robots.txt, ограничен origin и `scope`; query, fragment и маршруты выхода/удаления
+не обходятся. Повторные попытки отключены. `allowed_hosts` задаёт точные HTTPS-hosts ресурсов;
+нестандартный порт разрешён только вместе с host в этом списке. Все маршруты проекта имеют
+общий `split_group`. Результат `manifest.jsonl` подключается как `source_manifest`,
+а `OUTPUT/assets` — через `LUMEN_ASSET_ROOT`. Источники остаются `research_only` и `unclassified`.
+Повторный запуск с той же конфигурацией и версией кода восстанавливает очередь и manifest.
+Число зарезервированных URL, включая robots-отказы, ограничено `max_pages_per_project`.
+
 В конфигурации генерации `operators` задаёт список операторов; повторения задают веса.
 Список и его порядок фиксируются для `resume`. Без списка используется встроенный каталог.
 `source_mix: [grammar, grammar, external]` задаёт пропорцию попыток для собственных
