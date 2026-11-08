@@ -45,3 +45,9 @@ test('same-document hash routing remains a valid clean source',async()=>{
     html:shell+'<p>Account settings</p><script>location.hash="settings"</script>'});
   assert.equal(result.status,'accepted_clean');
 });
+test('script exceptions in clock callbacks are source errors, not infrastructure failures',async()=>{
+  const result=await captureCase(browser,{...request,render_mode:'offline-js',operator:'clean',
+    html:shell+'<p>Account settings</p><script>setTimeout(()=>{throw new TypeError("module unavailable")},10)</script>'});
+  assert.equal(result.status,'invalid_baseline');
+  assert.equal((result.evidence as any).reason,'javascript_error');
+});

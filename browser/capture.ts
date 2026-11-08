@@ -293,6 +293,9 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       timings: {baseline: captured - started,
         mutation_capture_oracle: verified - captured, rollback: performance.now() - verified}};
   } catch (error) {
+    if (javascript && error instanceof Error && /^clock\.runFor: [A-Za-z]*Error:/.test(error.message)) {
+      return {status: 'invalid_baseline', issues: [], evidence: {reason: 'javascript_error'}};
+    }
     if (javascript && error instanceof Error && error.message.includes('Execution context was destroyed')) {
       return {status: 'invalid_baseline', issues: [], evidence: {reason: 'source_navigation'}};
     }
