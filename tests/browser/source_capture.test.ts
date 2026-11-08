@@ -90,6 +90,17 @@ test('public source preserves an existing base URL',async()=>{
   } finally {await f.close();}
 });
 
+test('public source records annotation node limit without losing an exact offline capture',async()=>{
+  const f=await fixture('<h1>Account settings</h1><div hidden>'+'<span>Hidden item</span>'.repeat(2001)+'</div>');
+  try {
+    const result=await captureSource(f.page,{url,allowed_hosts:['localhost'],asset_root:f.root});
+    assert.equal(result.elements_status,'node_limit');
+    assert.equal(result.elements,undefined);
+    assert.equal(result.source_sha256,result.restored_sha256);
+    assert.equal(result.defect_status,'unverified');
+  } finally {await f.close();}
+});
+
 test('public source never sends a chained redirected request to an unapproved host',async()=>{
   let forbidden=0;
   const f=await fixture('<h1>Settings</h1><img src="/special-redirect">',(req,res)=>{

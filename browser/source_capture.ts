@@ -192,7 +192,8 @@ export async function captureSource(page: Page, request: SourceRequest) {
     let elements: Awaited<ReturnType<typeof annotations>> | undefined;
     let elementsStatus = 'captured';
     try {elements = await annotations(page);} catch (error) {
-      if (!(error instanceof Error) || error.message !== 'scene_limit: annotation nodes') throw error;
+      if (!(error instanceof Error) || !['scene_limit: annotation nodes',
+        'page.evaluate: Error: scene_limit: annotation nodes'].includes(error.message.split('\n')[0])) throw error;
       elementsStatus = 'node_limit';
     }
     const reference = await page.screenshot({animations:'disabled',caret:'hide',timeout:15000});
