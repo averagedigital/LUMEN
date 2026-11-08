@@ -34,6 +34,10 @@ def main():
     verify.add_argument('--output', required=True)
     verify.add_argument('--workers', type=int, default=2)
     verify.add_argument('--limit', type=int)
+    live = sources.add_parser('import-live')
+    live.add_argument('--manifest', required=True)
+    live.add_argument('--assets', required=True)
+    live.add_argument('--run', required=True)
     webcode = sources.add_parser('select-webcode')
     webcode.add_argument('--output', required=True)
     webcode.add_argument('--revision', required=True)
@@ -100,6 +104,9 @@ def main():
             elif args.source_command == 'webui':
                 from .modern_corpus import import_webui
                 result = import_webui(args.snapshot, args.output, args.revision)
+            elif args.source_command == 'import-live':
+                from .live_capture import import_live
+                result = import_live(args.manifest, args.assets, args.run)
             elif args.source_command == 'renderable':
                 from .renderable import prepare_renderable
                 result = prepare_renderable(args.manifest, args.output, args.assets)
@@ -135,6 +142,8 @@ def main():
             if not row:
                 raise ValueError('unknown case')
             record = json.loads(row[0])
+            if record['capture'].get('capture_mode') == 'live-session':
+                raise ValueError('live-session capture has no independent replay')
             worker = Worker(store.root / 'assets')
             try:
                 replay = worker.request(worker_payload(store, record['recipe']))

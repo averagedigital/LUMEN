@@ -194,7 +194,53 @@ def build_record(payload, result, assets, stats):
     validate_case(record)
     if source:
         record['provenance'] = source['provenance']
+        if source.get('capture_mode') == 'live-session':
+            record['capture'].update(capture_mode='live-session', independent_replay=False)
         validate_case(record)
+    return record
+
+
+def prepare_source(store, record, asset_root=None):
+    record = dict(record)
+    guard(store.root)
+    if len(record.get('assets', {})) > 128:
+        raise ValueError('source asset budget: count')
+    asset_bytes, raster_pixel_count = 0, 0
+    for asset in record.get('assets', {}).values():
+        digest = asset['sha256']
+        suffix = asset_suffix(asset['content_type'])
+        stored = store.path(digest, suffix)
+        original = stored if stored.exists() else Path(asset_root if asset_root is not None else os.environ['LUMEN_ASSET_ROOT']) / digest
+        size = original.stat().st_size
+        if size > 8 * 2**20:
+            raise ValueError('source asset size limit')
+        asset_bytes += size
+        if asset_bytes > 32 * 2**20:
+            raise ValueError('source asset budget: bytes')
+        content = original.read_bytes()
+        if hashlib.sha256(content).hexdigest() != digest:
+            raise ValueError('source asset checksum')
+        total_pixels = raster_pixels(content, suffix)
+        raster_pixel_count += total_pixels
+        if raster_pixel_count > 64 * 2**20:
+            raise ValueError('source asset budget: pixels')
+        if not stored.exists():
+            store.put(content, suffix)
+        target = store.root / 'assets' / digest
+        target.parent.mkdir(exist_ok=True)
+        if not target.exists():
+            os.link(stored, target)
+        if asset.get('license_sha256'):
+            notice = asset['license_sha256']
+            if not store.path(notice, 'txt').exists():
+                original = Path(asset_root if asset_root is not None else os.environ['LUMEN_ASSET_ROOT']) / notice
+                if original.stat().st_size > 65536:
+                    raise ValueError('source license size limit')
+                content = original.read_bytes()
+                if hashlib.sha256(content).hexdigest() != notice:
+                    raise ValueError('source license checksum')
+                store.put(content, 'txt')
+    record['html_hash'] = store.put(record.pop('html').encode(), 'html')
     return record
 
 
@@ -205,48 +251,12 @@ def register_sources(store, manifest):
             if len(line) > 2_100_000:
                 raise ValueError('source row exceeds size limit')
             record = json.loads(line)
+            if record.get('capture_mode') == 'live-session':
+                raise ValueError('live source requires import-live, not generation')
             scene_id = record['base_scene_id']
             if store.db.execute('SELECT 1 FROM source_scenes WHERE scene_id=?', (scene_id,)).fetchone():
                 continue
-            guard(store.root)
-            if len(record.get('assets', {})) > 128:
-                raise ValueError('source asset budget: count')
-            asset_bytes, raster_pixel_count = 0, 0
-            for asset in record.get('assets', {}).values():
-                digest = asset['sha256']
-                suffix = asset_suffix(asset['content_type'])
-                stored = store.path(digest, suffix)
-                original = stored if stored.exists() else Path(os.environ['LUMEN_ASSET_ROOT']) / digest
-                size = original.stat().st_size
-                if size > 8 * 2**20:
-                    raise ValueError('source asset size limit')
-                asset_bytes += size
-                if asset_bytes > 32 * 2**20:
-                    raise ValueError('source asset budget: bytes')
-                content = original.read_bytes()
-                if hashlib.sha256(content).hexdigest() != digest:
-                    raise ValueError('source asset checksum')
-                total_pixels = raster_pixels(content, suffix)
-                raster_pixel_count += total_pixels
-                if raster_pixel_count > 64 * 2**20:
-                    raise ValueError('source asset budget: pixels')
-                if not stored.exists():
-                    store.put(content, suffix)
-                target = store.root / 'assets' / digest
-                target.parent.mkdir(exist_ok=True)
-                if not target.exists():
-                    os.link(stored, target)
-                if asset.get('license_sha256'):
-                    notice = asset['license_sha256']
-                    if not store.path(notice, 'txt').exists():
-                        original = Path(os.environ['LUMEN_ASSET_ROOT']) / notice
-                        if original.stat().st_size > 65536:
-                            raise ValueError('source license size limit')
-                        content = original.read_bytes()
-                        if hashlib.sha256(content).hexdigest() != notice:
-                            raise ValueError('source license checksum')
-                        store.put(content, 'txt')
-            record['html_hash'] = store.put(record.pop('html').encode(), 'html')
+            record = prepare_source(store, record)
             with store.db:
                 store.db.execute('INSERT INTO source_scenes(scene_id,record) VALUES (?,?)',
                                  (scene_id, canonical(record)))
@@ -415,6 +425,9 @@ def generate(config_path, run, target=None, resume=False):
     root.mkdir(parents=True, exist_ok=True)
     lock = (root / 'scheduler.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if (root/'live-import.json').exists():
+        lock.close()
+        raise ValueError('live-import run cannot receive generation tasks')
     store = Store(root)
     contract = {key: config[key] for key in ('seed', 'variants_per_scene', 'source_manifest')}
     contract['generator_revision'] = revision()
@@ -521,7 +534,7 @@ def audit_cases(store):
     store.db.execute('PRAGMA temp_store=FILE')
     store.db.execute('BEGIN')
     store.db.execute('CREATE TABLE qa_work.signatures(reference TEXT, scene TEXT, split TEXT, signature TEXT, UNIQUE(reference,scene,split))')
-    counters = {key: Counter() for key in ('operators', 'families', 'sources', 'splits', 'locales', 'viewports', 'rejections', 'corpora', 'defect_origins')}
+    counters = {key: Counter() for key in ('operators', 'families', 'sources', 'splits', 'locales', 'viewports', 'rejections', 'corpora', 'defect_origins', 'capture_modes')}
     defect_families, bbox_sizes, issue_counts = Counter(), Counter(), Counter()
     positives = 0
     for index, record in enumerate(store.records()):
@@ -537,6 +550,7 @@ def audit_cases(store):
         counters['sources'][record['source_project_id']] += 1
         counters['corpora'][record.get('corpus', 'unclassified')] += 1
         counters['defect_origins'][record.get('defect_origin', 'unclassified')] += 1
+        counters['capture_modes'][record['capture'].get('capture_mode', 'unspecified')] += 1
         counters['splits'][record['split']] += 1
         counters['locales'][record['capture']['locale']] += 1
         counters['viewports'][str(record['capture']['image_px'])] += 1

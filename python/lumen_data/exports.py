@@ -1,5 +1,6 @@
 import os
 import json
+from collections import Counter
 from pathlib import Path
 import shutil
 from contextlib import nullcontext
@@ -88,11 +89,13 @@ def export_run(run, output, format_name, strict=False, public_safe=False, tile_s
     store, output = Store(run), Path(output)
     store.db.execute('BEGIN')
     provenance = set()
+    capture_modes = Counter()
     if output.exists():
         raise ValueError('export destination already exists')
     # Validate the entire selection before creating any training labels.
     for record in store.records():
         validate_case(record, public_safe=public_safe)
+        capture_modes[record['capture'].get('capture_mode', 'unspecified')] += 1
         check_case_assets(store, record)
         if tile_size is not None:
             tile_regions(record, tile_size, tile_overlap, allow_original=tile_uncovered == 'original')
@@ -208,7 +211,8 @@ def export_run(run, output, format_name, strict=False, public_safe=False, tile_s
             (output / 'README.md').write_text('# LUMEN\n\nSynthetic UI defects and visual changes. Automatically verified; not human-labelled.\n\n'
                 'Source licenses and release status:\n\n' + sources + '\n\n'
                 'Load manifest shards with the JSON datasets loader. File paths are relative to this directory.\n')
-    report = {'format': format_name, 'cases': count, 'strict': strict, 'public_safe': public_safe}
+    report = {'format': format_name, 'cases': count, 'strict': strict, 'public_safe': public_safe,
+              'capture_modes': dict(capture_modes)}
     if tile_size:
         report.update(tiles=tile_count, background_tiles=background_tiles, tile_size=tile_size,
                       original_cases=original_cases, images=tile_count + original_cases,
