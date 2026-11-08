@@ -9,9 +9,9 @@ from test_exports import accepted
 from test_pipeline import png
 
 
-def add_case(store, index, group, baseline):
+def add_case(store, index, group, baseline, base_scene=None):
     record = valid_case()
-    record.update(case_id=case_id({'index': index}), base_scene_id=f'scene-{index}',
+    record.update(case_id=case_id({'index': index}), base_scene_id=base_scene or f'scene-{index}',
                   split_group=group, split=group_split(group), operator='text_clip_x',
                   structural_family_id=group, source_project_id='lumen-grammar')
     record['capture'].update(locale='en')
@@ -21,6 +21,15 @@ def add_case(store, index, group, baseline):
     record['assets'] = {'reference': store.put(png(baseline)), 'current': store.put(png(current)),
                         'raw_change_mask': store.put(png(mask))}
     accepted(store, record)
+
+
+def test_qa_rejects_same_base_scene_across_splits_with_different_pixels(tmp_path):
+    store = Store(tmp_path)
+    for index, family in enumerate(('chat', 'calendar', 'admin')):
+        add_case(store, index, f'lumen-grammar-v2/{family}',
+                 np.full((100, 200, 3), 240 + index, np.uint8), base_scene='shared-scene')
+    with pytest.raises(ValueError, match='base scene split leakage'):
+        qa(tmp_path)
 
 
 def test_qa_rejects_identical_baselines_across_splits(tmp_path):

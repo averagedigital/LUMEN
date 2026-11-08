@@ -437,6 +437,10 @@ def audit_cases(store):
             bbox_sizes['tiny' if fraction < .001 else 'small' if fraction < .01 else 'medium' if fraction < .1 else 'large'] += 1
     guard(store.root)
     guard(tempfile.gettempdir())
+    scene_leakage = store.db.execute('''SELECT count(*) FROM (
+        SELECT scene FROM qa_work.signatures GROUP BY scene HAVING count(DISTINCT split)>1)''').fetchone()[0]
+    if scene_leakage:
+        raise ValueError(f'base scene split leakage: {scene_leakage} scenes')
     leakage = store.db.execute('SELECT count(*) FROM (SELECT reference FROM qa_work.signatures GROUP BY reference HAVING count(DISTINCT split)>1)').fetchone()[0]
     if leakage:
         raise ValueError(f'baseline split leakage: {leakage} images')
