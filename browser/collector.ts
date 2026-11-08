@@ -9,7 +9,7 @@ import {captureSource, saveAsset, SourceRejected, visitSource, sourceDocument} f
 import {capturePreparedPage, type Request} from './capture.ts';
 import {OPERATORS} from './mutations.ts';
 
-type Seed={id:string;url:string;scope:string;family:string;allowed_hosts:string[];license:string;
+type Seed={id:string;url:string;scope:string;family:string;allowed_hosts:string[];license:string;ready_selector?:string;
   repository?:{url:string;revision:string}};
 type Config={seeds:Seed[];max_pages_per_project:number;max_depth:number;concurrency:number;
   requests_per_minute:number;domain_delay_seconds:number;mode?:'offline-replay'|'live-session';
@@ -71,6 +71,8 @@ export function validateCollectorConfig(value:unknown):asserts value is Config{
       typeof s.url!=='string'||typeof s.scope!=='string'||!s.scope.startsWith('/')||s.scope.startsWith('//')||
       typeof s.family!=='string'||!s.family||typeof s.license!=='string'||!s.license||
       !Array.isArray(s.allowed_hosts)||!s.allowed_hosts.length||s.allowed_hosts.length>32)throw new Error('invalid collector seed');
+    if(s.ready_selector!==undefined&&(typeof s.ready_selector!=='string'||
+      !s.ready_selector.trim()||s.ready_selector.length>1000))throw new Error('invalid readiness selector');
     if(s.repository!==undefined){
       const r=s.repository;
       if(!r||typeof r!=='object'||Array.isArray(r)||Object.keys(r).some(k=>!['url','revision'].includes(k))||
@@ -213,7 +215,8 @@ export async function collect(config:Config, output:string){
         try{
           const ready=await context.newPage();let javascriptErrors=0;
           ready.on('pageerror',()=>{javascriptErrors++;});
-          const sourceRequest={url:entry.url,allowed_hosts:entry.seed.allowed_hosts,asset_root:assets};
+          const sourceRequest={url:entry.url,allowed_hosts:entry.seed.allowed_hosts,asset_root:assets,
+            ready_selector:entry.seed.ready_selector};
           const discover=async()=>{
               entry.links=routesFor(entry.seed,await ready.locator('a[href]').evaluateAll(anchors=>anchors.slice(0,1000).map(a=>(a as HTMLAnchorElement).href)));
           };

@@ -5,7 +5,7 @@ import {mkdir, open, readFile, rename, rm, stat, statfs} from 'node:fs/promises'
 import {join} from 'node:path';
 import {annotations} from './annotations.ts';
 
-export type SourceRequest = {url: string; allowed_hosts: string[]; asset_root: string};
+export type SourceRequest = {url: string; allowed_hosts: string[]; asset_root: string; ready_selector?: string};
 export class SourceRejected extends Error {}
 
 type Asset = {sha256: string; content_type: string};
@@ -113,6 +113,8 @@ export async function saveAsset(root: string, body: Buffer) {
 
 export async function visitSource<T>(page: Page, request: SourceRequest,
   visit:(resources:{assets:Record<string,Asset>;signal:AbortSignal;bytes:()=>number})=>Promise<T>) {
+  if(request.ready_selector!==undefined&&(typeof request.ready_selector!=='string'||
+    !request.ready_selector.trim()||request.ready_selector.length>1000))throw new Error('invalid readiness selector');
   if (!permitted(request.url, request.allowed_hosts)) throw new SourceRejected('unapproved source URL');
   const viewport = page.viewportSize();
   if (!viewport || viewport.width * viewport.height > 4_194_304) throw new SourceRejected('source viewport limit');
@@ -188,6 +190,14 @@ export async function visitSource<T>(page: Page, request: SourceRequest,
       if(transportError)throw transportError;
       if(error instanceof errors.TimeoutError)throw new SourceRejected('source render readiness timeout');
       throw error;
+    }
+    if(request.ready_selector!==undefined){
+      try{await page.waitForSelector(request.ready_selector,{state:'attached',timeout:15000});}
+      catch(error){
+        if(transportError)throw transportError;
+        if(error instanceof errors.TimeoutError)throw new SourceRejected('source readiness selector timeout');
+        throw error;
+      }
     }
     if(transportError) throw transportError;
     return await visit({assets,signal:abort.signal,bytes:()=>totalBytes});

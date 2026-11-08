@@ -34,6 +34,13 @@ test('collector requires explicit scope, hosts and finite crawl budgets',()=>{
   }
 });
 
+test('collector validates optional readiness selector bounds',()=>{
+  for(const ready_selector of [undefined,'#ready','x'.repeat(1000)])
+    validateCollectorConfig({...config,seeds:[{...seed,ready_selector}]});
+  for(const ready_selector of ['', ' ', null, false, 1, [], {}, 'x'.repeat(1001)])
+    assert.throws(()=>validateCollectorConfig({...config,seeds:[{...seed,ready_selector}]}),/invalid readiness selector/);
+});
+
 test('collector captures JS, obeys robots, isolates contexts, bounds routes and resumes',async()=>{
   const root=await mkdtemp(join(tmpdir(),'lumen-collector-'));
   execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',join(root,'key.pem'),
@@ -170,6 +177,20 @@ test('collector captures JS, obeys robots, isolates contexts, bounds routes and 
     assert.equal(offline.source_sha256,offline.restored_sha256);
     const annotation=JSON.parse(await readFile(join(offlineOutput,'assets',offline.sidecars.elements),'utf8'));
     assert.equal(annotation.scene_id,offline.base_scene_id,'annotation sidecar lost canonical scene identity');
+    for(const mode of ['offline-replay','live-session']){
+      const readyConfig=join(root,mode+'-readiness.json'),readyOutput=join(root,mode+'-readiness');
+      await writeFile(readyConfig,JSON.stringify({...config,mode,max_depth:0,domain_delay_seconds:0,requests_per_minute:600,
+        ...(mode==='live-session'?{live_operators:['clean'],viewport_sweep:[{viewport:[800,600],dpr:1}]}:{}),
+        seeds:[{...seed,url:origin+'/other',scope:'/other',allowed_hosts:[`localhost:${address.port}`],ready_selector:'#never-ready'}]}));
+      await promisify(execFile)('node',['--experimental-strip-types','browser/collector.ts',readyConfig,readyOutput],
+        {env:{...process.env,CURL_CA_BUNDLE:join(root,'cert.pem'),NODE_EXTRA_CA_CERTS:join(root,'cert.pem')},timeout:120000,maxBuffer:2**20});
+      const files=await readdir(join(readyOutput,'results'));
+      assert.equal(files.length,1);
+      const entry=JSON.parse(await readFile(join(readyOutput,'results',files[0]),'utf8'));
+      assert.equal(entry.status,'rejected');
+      assert.equal(entry.error,'source readiness selector timeout');
+      assert.equal(entry.record,undefined);assert.equal(entry.live_case,undefined);
+    }
     const liveRun=join(root,'live-run'),liveExport=join(root,'live-yolo');
     const imported=await promisify(execFile)('python',['-m','lumen_data.cli','sources','import-live',
       '--manifest',join(liveOutput,'live-manifest.jsonl'),'--assets',join(liveOutput,'assets'),'--run',liveRun],

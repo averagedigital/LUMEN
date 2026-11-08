@@ -242,6 +242,46 @@ test('transparent shell text and media do not make an empty SPA ready',async()=>
   }finally{await f.close();}
 });
 
+test('explicit readiness waits for JS completion after visible content and network idle',async()=>{
+  const f=await fixture('<h1>Dashboard</h1><div id="loading">Loading</div><script>setTimeout(()=>{document.querySelector("#loading").remove();document.body.insertAdjacentHTML("beforeend",\'<span id="ready" hidden></span>\')},2500)</script>');
+  let calls=0;
+  try{
+    const request={url,allowed_hosts:['localhost'],asset_root:f.root,ready_selector:'#ready'};
+    await visitSource(f.page,request,async()=>{
+      calls++;
+      assert.equal(await f.page.locator('#loading').count(),0);
+      assert.equal(await f.page.locator('#ready').count(),1);
+      assert.equal(await f.page.locator('#ready').isVisible(),false);
+    });
+    assert.equal(calls,1);
+  }finally{await f.close();}
+});
+
+test('explicit readiness fails closed on a missing or malformed selector',async()=>{
+  for(const ready_selector of ['#never-ready','css=[']){
+    const f=await fixture('<h1>Dashboard</h1>');let calls=0;
+    try{
+      const request={url,allowed_hosts:['localhost'],asset_root:f.root,ready_selector};
+      await assert.rejects(visitSource(f.page,request,async()=>{calls++;}),error=>
+        error instanceof Error&&(ready_selector==='#never-ready'?
+          error instanceof SourceRejected&&error.message==='source readiness selector timeout':!(error instanceof SourceRejected)));
+      assert.equal(calls,0);
+    }finally{await f.close();}
+  }
+});
+
+test('direct source readiness rejects invalid selector values before navigation',async()=>{
+  const f=await fixture('<h1>Dashboard</h1>');let calls=0;
+  try{
+    for(const ready_selector of ['', ' ', null, false, 1, [], {}, 'x'.repeat(1001)]){
+      const request={url,allowed_hosts:['localhost'],asset_root:f.root,ready_selector:ready_selector as string};
+      await assert.rejects(visitSource(f.page,request,async()=>{calls++;}),/invalid readiness selector/);
+      assert.equal(f.page.url(),'about:blank');
+    }
+    assert.equal(calls,0);
+  }finally{await f.close();}
+});
+
 for(const handled of [true,false]){
   test(`HTML returned for a missing avatar requires a complete rendered replacement: ${handled}`,async()=>{
     const handler=handled?'onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{textContent:\'AB\'}))"':'';
