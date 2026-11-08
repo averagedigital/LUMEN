@@ -44,3 +44,23 @@ docker run --rm lumen-data lumen-data --help
 `corpus` разделяет `lumen-synth` и `lumen-modern`; `defect_origin` описывает происхождение
 мутации независимо от лицензии исходной страницы. Старые источники без классификации
 учитываются как `unclassified`.
+
+
+Импорт WebUI: `sources webui --snapshot SNAPSHOT --output OUTPUT --revision COMMIT_SHA`.
+Используется `ronantakizawa/webui`, отдельно от WebUI-350k. Архив сохраняет все viewport;
+manifest содержит desktop-код одной базовой сцены на `sample_id`. Источники группируются
+по hostname, а upstream split сохраняется в provenance. Импорт не подтверждает качество рендера.
+
+`sources verify --manifest MANIFEST --assets ASSETS --references REFERENCES --output OUTPUT`
+проверяет чистый рендер, точное повторение и соответствие исходному screenshot.
+Эвристический порог: средняя абсолютная RGB-разница не выше 0,04 от 255,
+доля пикселей с разницей любого канала больше 32 — не выше 10%. Это фильтр
+реконструкции, не оценка современности дизайна и не замена визуальной проверки.
+`--workers` ограничивает параллелизм (1–4); `--limit` ограничивает число исходных строк.
+
+Для потокового отбора WebCode2M установите optional зависимости: `uv sync --extra corpus`.
+`sources select-webcode --output OUTPUT --revision COMMIT_SHA --max-shards 128`
+читает только колонки HTML и оценки через HTTP Range. Без `--max-shards` проходит все шарды.
+`--per-stratum` ограничивает отбор на сочетание структуры и layout (по умолчанию 2000).
+Выбор детерминирован по хешу; несовместимый HTML и внешние ресурсы отклоняются.
+Результат требует browser-проверки перед обучением. Старые источники не изменяются.

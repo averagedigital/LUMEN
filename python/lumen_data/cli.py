@@ -27,6 +27,22 @@ def main():
     source_prepare.add_argument('--output', required=True)
     source_prepare.add_argument('--max-shards', type=int, default=1)
     source_prepare.add_argument('--max-rows', type=int)
+    verify = sources.add_parser('verify')
+    verify.add_argument('--manifest', required=True)
+    verify.add_argument('--assets', required=True)
+    verify.add_argument('--references', required=True)
+    verify.add_argument('--output', required=True)
+    verify.add_argument('--workers', type=int, default=2)
+    verify.add_argument('--limit', type=int)
+    webcode = sources.add_parser('select-webcode')
+    webcode.add_argument('--output', required=True)
+    webcode.add_argument('--revision', required=True)
+    webcode.add_argument('--per-stratum', type=int, default=2000)
+    webcode.add_argument('--max-shards', type=int)
+    webui = sources.add_parser('webui')
+    webui.add_argument('--snapshot', required=True)
+    webui.add_argument('--output', required=True)
+    webui.add_argument('--revision', required=True)
     renderable = sources.add_parser('renderable')
     renderable.add_argument('--manifest', required=True)
     renderable.add_argument('--output', required=True)
@@ -72,6 +88,17 @@ def main():
                 result = audit(args.registry, args.output)
             elif args.source_command == 'prepare':
                 result = prepare(args.audit, args.source, args.output, args.max_shards, args.max_rows)
+            elif args.source_command == 'verify':
+                from .source_verification import verify_sources
+                result = verify_sources(args.manifest, args.assets, args.references, args.output,
+                                        workers=args.workers, limit=args.limit)
+            elif args.source_command == 'select-webcode':
+                from .webcode_selection import select_webcode
+                result = select_webcode(args.output, args.revision, per_stratum=args.per_stratum,
+                                        max_shards=args.max_shards)
+            elif args.source_command == 'webui':
+                from .modern_corpus import import_webui
+                result = import_webui(args.snapshot, args.output, args.revision)
             elif args.source_command == 'renderable':
                 from .renderable import prepare_renderable
                 result = prepare_renderable(args.manifest, args.output, args.assets)
