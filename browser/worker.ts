@@ -10,7 +10,8 @@ try {
       if (line.length > 2_100_000) throw new Error('request size limit');
       const request = JSON.parse(line);
       const scene = request.scene ? buildScene(request.scene) : null;
-      const result = await captureCase(browser, {...request, annotations: Boolean(scene), html: scene?.html ?? request.html});
+      const result = await captureCase(browser, {...request, annotations: Boolean(scene),
+        initialModal: scene?.state.modal_element_id, html: scene?.html ?? request.html});
       process.stdout.write(JSON.stringify({...result, scene}) + '\n');
     } catch (error) {
       process.stdout.write(JSON.stringify({status: 'resource_error', issues: [],

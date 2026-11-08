@@ -117,3 +117,19 @@ test('desktop detail tables provide visible non-scrollable component targets', a
     assert.ok(tables.every(table => table.overflow === 'visible' && table.cells >= 2 && table.width <= table.parentWidth));
   } finally { await browser.close(); }
 });
+
+test('synthetic confirmation scenes expose a native modal task and valid transition', async () => {
+  const browser = await chromium.launch();
+  try {
+    for (const locale of ['en', 'ru', 'ar']) for (const width of [390, 1280]) {
+      const scene = buildScene({seed: 15, archetype: 'settings', locale, width});
+      assert.equal(scene.state.modal_element_id, 'confirm-dialog');
+      assert.equal(scene.task.target_element_id, 'confirm-close');
+      const result = await captureCase(browser, {html: scene.html, initialModal: scene.state.modal_element_id,
+        operator: 'benign_action', seed: 42, viewport: [width, 800], dpr: 1, locale});
+      assert.equal(result.status, 'accepted_benign_change', `${locale}/${width}: ${JSON.stringify(result.evidence)}`);
+      assert.ok(result.scenario_tags?.includes('modal'));
+      assert.equal(result.rollback, true);
+    }
+  } finally { await browser.close(); }
+});
