@@ -199,6 +199,9 @@ export async function captureSource(page: Page, request: SourceRequest) {
     const reference = await page.screenshot({animations:'disabled',caret:'hide',timeout:15000});
     if (!reference.equals(await page.screenshot({animations:'disabled',caret:'hide',timeout:15000}))) throw new SourceRejected('unstable source pixels');
     await page.evaluate(() => {
+      // Offline documents have an opaque origin; keep SRI checks with anonymous CORS.
+      document.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"][integrity]:not([crossorigin])')
+        .forEach(link => { link.crossOrigin = 'anonymous'; });
       for (const style of document.querySelectorAll('style')) {
         if (!style.sheet) continue;
         const rules = Array.from(style.sheet.cssRules).map(rule => rule.cssText).join('\n');

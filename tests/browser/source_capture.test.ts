@@ -90,6 +90,20 @@ test('public source preserves an existing base URL',async()=>{
   } finally {await f.close();}
 });
 
+test('same-origin integrity-protected CSS remains active in offline captures',async()=>{
+  const integrity='sha384-'+createHash('sha384').update(css).digest('base64');
+  const f=await fixture(`<link rel="stylesheet" href="/style.css" integrity="${integrity}"><h1>Account settings</h1>`);
+  try {
+    const expected=await f.context.newPage();
+    await expected.setContent(`<style>${css}</style><h1>Account settings</h1>`);
+    const pixels=await expected.screenshot();
+    const result=await captureSource(f.page,{url,allowed_hosts:['localhost'],asset_root:f.root});
+    assert.ok(result.reference.equals(pixels));
+    assert.equal(result.source_sha256,result.restored_sha256);
+    assert.ok(result.html.includes(integrity));
+  } finally {await f.close();}
+});
+
 test('public source records annotation node limit without losing an exact offline capture',async()=>{
   const f=await fixture('<h1>Account settings</h1><div hidden>'+'<span>Hidden item</span>'.repeat(2001)+'</div>');
   try {
