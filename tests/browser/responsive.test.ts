@@ -19,10 +19,17 @@ test('dynamic viewport path preserves final responsive pixels at DPR 2',async()=
   assert.deepEqual(resized.resize_trace,[[1280,720],[844,390],[390,844]]);
   assert.equal(resized.rollback,true);
 });
-
 test('resize path dimensions and budget are validated',async()=>{
   for(const resize_path of [[],[[0,720]],Array(9).fill([800,600])]) {
     await assert.rejects(captureCase(browser,{html,operator:'clean',seed:0,viewport:[390,844],dpr:1,resize_path}),/invalid capture request/);
   }
 });
 
+test('clean capture exposes actual width and height CSS boundaries for sweep planning',async()=>{
+  const result=await captureCase(browser,{html:html+'<style>@media(min-height:500px){main{padding:2px}}@media(min-width:40em){main{gap:24px}}</style>',
+    operator:'clean',seed:0,viewport:[800,600],dpr:1,inspect_breakpoints:true});
+  assert.equal(result.status,'accepted_clean');
+  assert.deepEqual(result.responsive_breakpoints?.points.map(p=>[p.axis,p.value]),[['width',600],['height',500]]);
+  assert.ok(result.responsive_breakpoints?.unsupported.some(q=>q.includes('40em')));
+  assert.equal(result.rollback,true);
+});

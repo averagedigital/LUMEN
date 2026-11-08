@@ -87,6 +87,7 @@ def test_component_operators_are_scheduled_without_removing_text_operators():
         'dropdown_ancestor_overflow', 'image_object_fit_regression', 'svg_viewbox_removal',
         'containing_block_removal', 'stacking_context_regression',
         'flex_min_width_regression', 'grid_min_content_regression',
+        'breakpoint_shift_regression', 'resize_stale_width_regression',
         'compound_font_letter', 'compound_font_indent', 'compound_font_offset', 'compound_font_padding',
         'compound_letter_indent', 'compound_letter_offset', 'compound_letter_padding',
         'compound_indent_offset', 'compound_indent_padding', 'compound_offset_padding'}

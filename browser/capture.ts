@@ -10,9 +10,11 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { REALISTIC_OPERATORS, BOUNDARY_OPERATORS, TEXT_SYMPTOMS, discoverRealistic, applyRealistic } from './realistic_mutations.ts';
 import { COMPOSITE_OPERATORS, applyComposite } from './composite_mutations.ts';
+import { RESPONSIVE_OPERATORS, applyResponsive, breakpointCatalog } from './responsive_mutations.ts';
 
 export type Request = { html: string; operator: string; seed: number; viewport: [number, number]; dpr: number; locale?: string; annotations?: boolean; initialModal?: string;
   resize_path?: number[][];
+  inspect_breakpoints?: boolean;
   control_of?: string; control_component?: 0 | 1;
   assets?: Record<string, {sha256: string; content_type: string}> };
 export type CaptureResult = {
@@ -24,6 +26,7 @@ export type CaptureResult = {
   scrollBefore?: number[]; scrollAfter?: number[];
   scenario_tags?: string[];
   resize_trace?: number[][];
+  responsive_breakpoints?: Awaited<ReturnType<typeof breakpointCatalog>>;
 };
 
 async function stable(page: Page): Promise<Buffer | null> {
@@ -60,7 +63,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       (compositeControl && (!COMPOSITE_OPERATORS.includes(request.control_of ?? '') ||
         ![0,1].includes(request.control_component as number)))) throw new Error('invalid control request');
   const mechanism = boundaryControl || compositeControl ? request.control_of! : request.operator;
-  if (!Number.isSafeInteger(seed) || seed < 0 || html.length > 2_000_000 || ![1, 2].includes(dpr) ||
+  if ((request.inspect_breakpoints !== undefined && typeof request.inspect_breakpoints !== 'boolean') ||
+      !Number.isSafeInteger(seed) || seed < 0 || html.length > 2_000_000 || ![1, 2].includes(dpr) ||
       viewport.length !== 2 || viewport.some(x => !Number.isInteger(x) || x < 240 || x > 3840) ||
       viewport[0] * viewport[1] * dpr ** 2 > 16_777_216) throw new Error('invalid capture request');
   if (request.resize_path !== undefined && (!Array.isArray(request.resize_path) ||
@@ -152,6 +156,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const componentOperator = COMPONENT_OPERATORS.some(name => name === request.operator);
     const componentCandidates = discoverComponent(componentsBefore, request.operator);
     const compositeOperator = COMPOSITE_OPERATORS.includes(mechanism);
+    const responsiveOperator = RESPONSIVE_OPERATORS.some(name => name === request.operator);
     const realisticOperator = compositeOperator || REALISTIC_OPERATORS.some(name => name === mechanism);
     const candidates = realisticOperator ? await discoverRealistic(page, before, mechanism) : discover(before, request.operator);
     const baselineProblems = textProblems(before, viewport);
@@ -159,11 +164,12 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const componentProblems = componentBaselineProblems(componentsBefore);
     if (componentProblems.length) return {status: 'invalid_baseline', issues: [], evidence: componentProblems};
     const negative = request.operator === 'clean' || request.operator.startsWith('benign_');
-    if (componentOperator ? !componentCandidates.length : !candidates.length && !(negative && !realisticOperator && componentsBefore.length)) {
+    if (!responsiveOperator && (componentOperator ? !componentCandidates.length : !candidates.length && !(negative && !realisticOperator && componentsBefore.length))) {
       return {status: 'inapplicable', issues: []};
     }
     const reference = await stable(page);
     if (!reference) return {status: 'unstable', issues: [], evidence: {reason: 'baseline_capture'}};
+    const responsive_breakpoints = request.inspect_breakpoints ? await breakpointCatalog(page) : undefined;
     const captured = performance.now();
     const styles = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('body,body *'))
       .map(el => el.getAttribute('style')));
@@ -171,6 +177,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       Array.from(document.querySelectorAll('svg')).map(el => el.getAttribute('viewBox'))) : null;
     const operator = request.operator as Operator;
     let receipt: unknown = null;
+    let restoreResponsive: (() => Promise<void>) | undefined;
     let interaction: CaptureResult['interaction'];
     const detailsBefore = await page.evaluate(() => Array.from(document.querySelectorAll('details')).map(e => e.open));
     const dialogsBefore = await page.evaluate(() => Array.from(document.querySelectorAll('dialog')).map(e =>
@@ -184,6 +191,17 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       await page.locator(actionSelector).click();
       await page.evaluate(scroll => window.scrollTo(scroll[0], scroll[1]), scrollBefore);
       interaction = {origin: 'synthetic', action: 'click', element_id: elementId};
+    } else if (responsiveOperator) {
+      const mutation = await applyResponsive(page, operator, before, viewport, dpr, seed, request.resize_path);
+      if (!mutation.receipt) return {status:'inapplicable',issues:[],evidence:mutation.diagnostic};
+      receipt = mutation.receipt;
+      restoreResponsive = mutation.restore;
+      const ready = await page.evaluate(async () => {
+        await document.fonts.ready;
+        const results = await Promise.allSettled(Array.from(document.images).map(image => image.decode()));
+        return results.every(result => result.status === 'fulfilled');
+      });
+      if (!ready || blocked.length) return {status:'unverified',issues:[],evidence:{reason:'responsive_assets_unavailable'}};
     } else if (componentOperator) {
       receipt = await applyComponent(page, operator, componentCandidates[seed % componentCandidates.length], componentsBefore, seed);
     } else if (compositeOperator) {
@@ -211,6 +229,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const current = await stable(page);
     if (!current) return {status: 'unstable', issues: [], evidence: {reason: 'current_capture'}};
     const verified = performance.now();
+    if (restoreResponsive) await restoreResponsive();
     await page.evaluate(styles => Array.from(document.querySelectorAll<HTMLElement>('body,body *')).forEach((el, i) => {
       if (styles[i] === null) el.removeAttribute('style'); else el.setAttribute('style', styles[i]);
     }), styles);
@@ -238,16 +257,21 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     let status = 'unverified';
     if (operator === 'clean' && !changed && issues.length === 0) status = 'accepted_clean';
     else if (operator.startsWith('benign_') && changed && issues.length === 0 && validAfter) status = 'accepted_benign_change';
-    else if (!negative && changed && issues.some(issue => realisticOperator ?
+    else if (!negative && changed && issues.some(issue => responsiveOperator || (realisticOperator ?
       TEXT_SYMPTOMS.includes(issue.symptom) :
-      issue.symptom === componentSymptom(operator))) status = 'accepted_bug';
+      issue.symptom === componentSymptom(operator)))) status = 'accepted_bug';
     else if (!changed) status = 'no_visible_effect';
     return {status, issues, receipt, reference: reference.toString('base64'), current: current.toString('base64'),
       rollback: true, browser: browser.version(), elements, statesAfter, interaction, scrollBefore, scrollAfter, scenario_tags,
       ...(request.resize_path ? {resize_trace: [...request.resize_path, viewport]} : {}),
+      ...(responsive_breakpoints ? {responsive_breakpoints} : {}),
       timings: {baseline: captured - started,
         mutation_capture_oracle: verified - captured, rollback: performance.now() - verified}};
   } catch (error) {
+    if (error instanceof Error && ['scene_limit: media rules', 'scene_limit: media breakpoints',
+      'scene_limit: nested media rules'].some(message => error.message.includes(message))) {
+      return {status: 'inapplicable', issues: [], evidence: {reason: 'responsive_rule_limit'}};
+    }
     if (error instanceof Error && error.message.includes('scene_limit: text elements')) {
       return {status: 'invalid_baseline', issues: [], evidence: {reason: 'text_element_limit'}};
     }
