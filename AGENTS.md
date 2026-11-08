@@ -3,6 +3,8 @@
 - Use ponytail. Read affected code before editing.
 - Use `/humanizer` for public prose when available; otherwise use short factual text.
 - Keep comments short. Record measured results only.
+- Keep development logs, handoffs and session status in ignored `.internal/`, never in public documentation.
+- README contains usage and technical reference only; no work reports or intermediate dataset counts.
 - Write behavior tests before implementation. Run checks before committing.
 - Use small logical commits and push each tested commit when authorized.
 - Inspect the diff and scan secrets before staging and after staging.

@@ -13,3 +13,7 @@ artifacts/
 *.log
 .DS_Store
 ._*
+
+.internal/
+docs/DEVLOG.md
+docs/HANDOFF.md
