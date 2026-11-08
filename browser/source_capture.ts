@@ -111,21 +111,21 @@ export async function saveAsset(root: string, body: Buffer) {
   return digest;
 }
 
-export async function captureSource(page: Page, request: SourceRequest, onReady?: (page: Page) => Promise<void>) {
+export async function visitSource<T>(page: Page, request: SourceRequest,
+  visit:(resources:{assets:Record<string,Asset>;signal:AbortSignal;bytes:()=>number})=>Promise<T>) {
   if (!permitted(request.url, request.allowed_hosts)) throw new SourceRejected('unapproved source URL');
   const viewport = page.viewportSize();
   if (!viewport || viewport.width * viewport.height > 4_194_304) throw new SourceRejected('source viewport limit');
   const context = page.context(), browser = context.browser();
   if (!browser) throw new Error('source browser unavailable');
   await mkdir(request.asset_root, {recursive:true});
-  let requests = 0, offline: BrowserContext | undefined, totalBytes=0, totalPixels=0, active=0;
+  let requests = 0, totalBytes=0, totalPixels=0, active=0;
   let transportError:Error|undefined;
   const assets:Record<string,Asset>={}, assetURLs=new Set<string>(), pending=new Set<Promise<void>>(), waiting:Array<()=>void>=[];
   const abort=new AbortController();
   const deadline = setTimeout(() => {
     abort.abort();
     void context.close().catch(() => {});
-    void offline?.close().catch(() => {});
   }, 60000);
   try {
     await context.route('**/*', route => {
@@ -169,25 +169,50 @@ export async function captureSource(page: Page, request: SourceRequest, onReady?
     await page.evaluate(async () => {await document.fonts.ready;});
     await page.waitForTimeout(1000);
     if(transportError) throw transportError;
-    if(onReady) await onReady(page);
-    await page.evaluate(() => {
+    return await visit({assets,signal:abort.signal,bytes:()=>totalBytes});
+  } finally {
+    clearTimeout(deadline);
+    abort.abort();
+    await Promise.allSettled(pending);
+    await context.unrouteAll({behavior:'wait'});
+  }
+}
+
+export async function sourceDocument(page:Page, clone=false){
+  const html=await page.evaluate(clone=>{
       const source=document.baseURI;
-      document.querySelectorAll('script,noscript,iframe,object,embed,meta[http-equiv],input[type="hidden"],link[as="script"]').forEach(el => el.remove());
-      document.querySelectorAll('meta[name]').forEach(el => {
+      const root=clone?document.documentElement.cloneNode(true) as HTMLElement:document.documentElement;
+      root.querySelectorAll('script,noscript,iframe,object,embed,meta[http-equiv],input[type="hidden"],link[as="script"]').forEach(el => el.remove());
+      root.querySelectorAll('meta[name]').forEach(el => {
         if (/token|csrf|secret|password/i.test(el.getAttribute('name') ?? '')) el.remove();
       });
-      document.querySelectorAll('input,textarea').forEach(el => {
+      root.querySelectorAll('input,textarea').forEach(el => {
         (el as HTMLInputElement).value = '';
         el.removeAttribute('value');
         if (el.tagName === 'TEXTAREA') el.textContent = '';
       });
-      document.querySelectorAll('*').forEach(el => {
+      [root,...root.querySelectorAll('*')].forEach(el => {
         for (const attribute of Array.from(el.attributes)) {
           if (/^on/i.test(attribute.name) || /nonce|token|secret|password/i.test(attribute.name)) el.removeAttribute(attribute.name);
         }
       });
-      const base = document.createElement('base'); base.href = source; document.head.prepend(base);
-    });
+      const base = document.createElement('base'); base.href = source; root.querySelector('head')!.prepend(base);
+      if(clone)return (document.doctype?new XMLSerializer().serializeToString(document.doctype):'')+root.outerHTML;
+      return null;
+  },clone);
+  return html??await page.content();
+}
+
+export async function captureSource(page: Page, request: SourceRequest, onReady?: (page: Page) => Promise<void>) {
+  return visitSource(page,request,async({assets,signal,bytes})=>{
+    const viewport=page.viewportSize(), browser=page.context().browser();
+    if(!viewport||!browser)throw new Error('source browser unavailable');
+    let offline:BrowserContext|undefined;
+    const closeOffline=()=>{void offline?.close().catch(()=>{});};
+    signal.addEventListener('abort',closeOffline);
+    try{
+    if(onReady) await onReady(page);
+    await sourceDocument(page);
     if (!await page.evaluate(() => Array.from(document.images).every(image => image.complete && image.naturalWidth > 0))) {
       throw new SourceRejected('missing source images');
     }
@@ -235,12 +260,7 @@ export async function captureSource(page: Page, request: SourceRequest, onReady?
     return {html,assets,elements,elements_status:elementsStatus,reference,
       scene_id:sha(html),source_url:request.url,final_url:page.url(),captured_at:new Date().toISOString(),
       source_sha256:sha(reference),restored_sha256:sha(image),defect_status:'unverified' as const,
-      viewport:[viewport.width,viewport.height],dpr,asset_bytes:totalBytes};
-  } finally {
-    clearTimeout(deadline);
-    abort.abort();
-    await Promise.allSettled(pending);
-    await context.unrouteAll({behavior:'wait'});
-    await offline?.close();
-  }
+      viewport:[viewport.width,viewport.height],dpr,asset_bytes:bytes()};
+    }finally{signal.removeEventListener('abort',closeOffline);await offline?.close();}
+  });
 }

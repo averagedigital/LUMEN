@@ -1,4 +1,4 @@
-import type { Browser, Page } from 'playwright';
+import type { Browser, Page, Route, Frame } from 'playwright';
 import { snapshot } from './snapshot.ts';
 import { apply, discover, OPERATORS, type Operator } from './mutations.ts';
 import { validate, textProblems, type Finding } from './validate.ts';
@@ -28,6 +28,7 @@ export type CaptureResult = {
   scenario_tags?: string[];
   resize_trace?: number[][];
   responsive_breakpoints?: Awaited<ReturnType<typeof breakpointCatalog>>;
+  capture_mode?: 'live-session'; live_blocked_requests?: number;
 };
 
 async function stable(page: Page): Promise<Buffer | null> {
@@ -55,9 +56,15 @@ async function componentIssues(page: Page, findings: Finding[], target: string, 
   return [{...root, bbox, evidence: {...root.evidence, observations: related}}, ...findings.filter(f => !ids.has(f.id))];
 }
 
-export async function captureCase(browser: Browser, request: Request): Promise<CaptureResult> {
+export async function capturePreparedPage(page: Page, request: Omit<Request, 'html' | 'assets' | 'render_mode'>): Promise<CaptureResult> {
+  const browser=page.context().browser();
+  if(!browser)throw new Error('live browser unavailable');
+  return captureCase(browser,{...request,html:''},page);
+}
+
+export async function captureCase(browser: Browser, request: Request, existingPage?: Page): Promise<CaptureResult> {
   const {html, seed, viewport, dpr} = request;
-  const javascript = request.render_mode === 'offline-js';
+  const javascript = request.render_mode === 'offline-js' || Boolean(existingPage);
   if (request.render_mode !== undefined && !['static', 'offline-js'].includes(request.render_mode)) throw new Error('invalid capture request');
   if (!OPERATORS.includes(request.operator as Operator)) throw new Error('unknown operator');
   const boundaryControl = request.operator === 'benign_near_boundary';
@@ -76,8 +83,12 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
         size.some(x => !Number.isInteger(x) || x < 240 || x > 3840) ||
         size[0] * size[1] * dpr ** 2 > 16_777_216))) throw new Error('invalid capture request');
   const initial = request.resize_path?.[0] ?? viewport;
+  if(existingPage){
+    const actual=existingPage.viewportSize(),scale=await existingPage.evaluate(()=>devicePixelRatio);
+    if(!actual||actual.width!==initial[0]||actual.height!==initial[1]||scale!==dpr)throw new Error('live capture profile mismatch');
+  }
   const started = performance.now();
-  const context = await browser.newContext({viewport: {width: initial[0], height: initial[1]},
+  const context = existingPage?.context() ?? await browser.newContext({viewport: {width: initial[0], height: initial[1]},
     deviceScaleFactor: dpr, locale: request.locale ?? 'en-US', timezoneId: 'UTC',
     colorScheme: 'light', reducedMotion: 'reduce', serviceWorkers: 'block', javaScriptEnabled: javascript,
     acceptDownloads: false});
@@ -85,8 +96,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
   const fonts = new Map<string, Buffer>();
   let javascriptErrors = 0;
   let sourceNavigated = false;
-  if (javascript) await context.routeWebSocket('**/*', socket => { blocked.push('websocket'); socket.close(); });
-  await context.route('**/*', async route => {
+  if (javascript && !existingPage) await context.routeWebSocket('**/*', socket => { blocked.push('websocket'); socket.close(); });
+  if(!existingPage) await context.route('**/*', async route => {
     const asset = request.assets?.[route.request().url()];
     if (asset && process.env.LUMEN_ASSET_ROOT && /^[a-f0-9]{64}$/.test(asset.sha256) &&
         ['text/css', 'font/woff2', 'image/jpeg', 'image/png', 'image/svg+xml', 'image/webp',
@@ -104,14 +115,21 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     blocked.push(new URL(route.request().url()).protocol);
     return route.abort();
   });
+  let liveBlockedRequests=0, liveReference:Buffer|undefined;
+  let mutationStarted=false, restorationConfirmed=false;
+  const freezeRoute=async(route:Route)=>{liveBlockedRequests++;await route.abort();};
+  const onPageError=()=>{javascriptErrors++;};
+  let onNavigation:((frame:Frame)=>void)|undefined;
   let timedOut = false;
   const deadline = setTimeout(() => { timedOut = true; void context.close().catch(() => {}); }, 45000);
   try {
-    const page = await context.newPage();
+    const page = existingPage ?? await context.newPage();
     page.setDefaultTimeout(15000);
-    page.on('pageerror', () => { javascriptErrors++; });
-    page.on('framenavigated', frame => { if (frame === page.mainFrame() && frame.url().split('#')[0] !== 'about:blank') sourceNavigated = true; });
-    if (javascript) {
+    const baseURL=existingPage?existingPage.url().split('#')[0]:'about:blank';
+    page.on('pageerror',onPageError);
+    onNavigation=frame=>{if(frame===page.mainFrame()&&frame.url().split('#')[0]!==baseURL)sourceNavigated=true;};
+    page.on('framenavigated',onNavigation);
+    if (javascript && !existingPage) {
       // Offline JS has a fixed initialization window; later timers stay paused.
       await page.clock.install({time: new Date('2026-01-01T00:00:00Z')});
       await page.clock.pauseAt(new Date('2026-01-01T00:00:01Z'));
@@ -120,12 +138,13 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
         Math.random = () => { state = (Math.imul(1664525, state) + 1013904223) >>> 0; return state / 4294967296; };
       }, seed);
     }
-    await page.setContent(html, {waitUntil: 'load', timeout: 15000});
-    if (javascript) await page.clock.runFor(1000);
+    if(!existingPage)await page.setContent(html, {waitUntil: 'load', timeout: 15000});
+    if (javascript && !existingPage) await page.clock.runFor(1000);
     if (request.resize_path) {
       for (const size of [...request.resize_path.slice(1), viewport]) {
         await page.setViewportSize({width: size[0], height: size[1]});
-        if (javascript) await page.clock.runFor(100);
+        if (javascript && !existingPage) await page.clock.runFor(100);
+        if(existingPage)await page.waitForTimeout(100);
         await page.evaluate(async () => { await document.fonts.ready; });
       }
       await page.evaluate(async () => {
@@ -170,6 +189,12 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
         controls[seed % controls.length]?.focus({preventScroll: true});
       }, seed);
     }
+    if(existingPage){
+      const original=await stable(page);
+      if(!original)return {status:'unstable',issues:[],evidence:{reason:'live_baseline_capture'}};
+      liveReference=original;
+      await page.route('**/*',freezeRoute);
+    }
     const scrollBefore = await page.evaluate(() => [scrollX, scrollY]);
     const scenario_tags = await visibleScenarios(page);
     const elements = request.annotations ? await annotations(page) : undefined;
@@ -192,6 +217,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     }
     const reference = await stable(page);
     if (!reference) return {status: 'unstable', issues: [], evidence: {reason: 'baseline_capture'}};
+    if(liveReference&&!reference.equals(liveReference))return {status:'unstable',issues:[],evidence:{reason:'live_baseline_changed'}};
     const responsive_breakpoints = request.inspect_breakpoints ? await breakpointCatalog(page) : undefined;
     const captured = performance.now();
     const styles = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('body,body *'))
@@ -206,6 +232,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const dialogsBefore = await page.evaluate(() => Array.from(document.querySelectorAll('dialog')).map(e =>
       ({open: e.open, modal: e.matches(':modal'), returnValue: e.returnValue})));
     const activeBefore = await page.evaluate(() => Array.from(document.querySelectorAll('body,body *')).indexOf(document.activeElement!));
+    mutationStarted=operator!=='clean';
     if (operator === 'benign_theme') {
       await page.evaluate(() => { document.body.style.backgroundColor = '#eff6ff'; });
     } else if (operator === 'benign_action') {
@@ -276,6 +303,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     await page.mouse.move(0, 0);
     const restored = await stable(page);
     if (!restored?.equals(reference)) return {status: 'unstable', issues: [], evidence: {reason: 'rollback_failed'}};
+    restorationConfirmed=true;
     const changed = !reference.equals(current);
     let status = 'unverified';
     if (operator === 'clean' && !changed && issues.length === 0) status = 'accepted_clean';
@@ -291,6 +319,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       rollback: true, browser: browser.version(), elements, statesAfter, interaction, scrollBefore, scrollAfter, scenario_tags,
       ...(request.resize_path ? {resize_trace: [...request.resize_path, viewport]} : {}),
       ...(responsive_breakpoints ? {responsive_breakpoints} : {}),
+      ...(existingPage?{capture_mode:'live-session' as const,live_blocked_requests:liveBlockedRequests}:{}),
       timings: {baseline: captured - started,
         mutation_capture_oracle: verified - captured, rollback: performance.now() - verified}};
   } catch (error) {
@@ -315,5 +344,13 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       return {status: 'invalid_baseline', issues: [], evidence: {reason: 'component_element_limit'}};
     }
     throw error;
-  } finally { clearTimeout(deadline); await context.close(); }
+  } finally {
+    clearTimeout(deadline);
+    if(existingPage){
+      existingPage.off('pageerror',onPageError);
+      if(onNavigation)existingPage.off('framenavigated',onNavigation);
+      if(mutationStarted&&!restorationConfirmed)await existingPage.close();
+      else if(!existingPage.isClosed())await existingPage.unroute('**/*',freezeRoute);
+    }else await context.close();
+  }
 }
