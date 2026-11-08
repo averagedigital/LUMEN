@@ -9,7 +9,8 @@ import {captureSource, saveAsset, SourceRejected, visitSource, sourceDocument} f
 import {capturePreparedPage, type Request} from './capture.ts';
 import {OPERATORS} from './mutations.ts';
 
-type Seed={id:string;url:string;scope:string;family:string;allowed_hosts:string[];license:string};
+type Seed={id:string;url:string;scope:string;family:string;allowed_hosts:string[];license:string;
+  repository?:{url:string;revision:string}};
 type Config={seeds:Seed[];max_pages_per_project:number;max_depth:number;concurrency:number;
   requests_per_minute:number;domain_delay_seconds:number;mode?:'offline-replay'|'live-session';
   live_operators?:string[];viewport_sweep?:Array<Pick<Request,'viewport'|'dpr'|'resize_path'>>};
@@ -17,6 +18,16 @@ type Variant={operator:string;profile:Pick<Request,'viewport'|'dpr'|'resize_path
 type Entry={seed:Seed;url:string;depth:number;status:string;links:string[];variant?:Variant;
   record?:Record<string,unknown>;live_case?:{sha256:string;base_scene_id:string};error?:string};
 const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
+
+function sourceIdentity(seed:Seed,address:string){
+  const repository=seed.repository;
+  if(!repository)return {project:seed.id,address,provenance:{source_url:address,origin:'web-crawl'}};
+  const url=repository.url.toLowerCase(),route=new URL(address).pathname;
+  return {project:'repository-'+hash(url).slice(0,16),address:JSON.stringify([url,repository.revision,route]),
+    provenance:{source_url:repository.url+'/tree/'+repository.revision,origin:'repository-render',
+      repository_url:repository.url,repository_revision:repository.revision,source_route:route,
+      repository_verification:'declared'}};
+}
 
 function scoped(seed:Seed, address:string){
   const url=new URL(address), origin=new URL(seed.url);
@@ -60,6 +71,13 @@ export function validateCollectorConfig(value:unknown):asserts value is Config{
       typeof s.url!=='string'||typeof s.scope!=='string'||!s.scope.startsWith('/')||s.scope.startsWith('//')||
       typeof s.family!=='string'||!s.family||typeof s.license!=='string'||!s.license||
       !Array.isArray(s.allowed_hosts)||!s.allowed_hosts.length||s.allowed_hosts.length>32)throw new Error('invalid collector seed');
+    if(s.repository!==undefined){
+      const r=s.repository;
+      if(!r||typeof r!=='object'||Array.isArray(r)||Object.keys(r).some(k=>!['url','revision'].includes(k))||
+        typeof r.url!=='string'||r.url.length>300||r.url.toLowerCase().endsWith('.git')||
+        !/^https:\/\/github\.com\/[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*$/i.test(r.url)||
+        typeof r.revision!=='string'||!r.revision.match(/^[a-f0-9]{40}$/))throw new Error('invalid repository provenance');
+    }
     const url=new URL(s.url);
     if(url.protocol!=='https:'||!s.allowed_hosts.includes(url.host)||!scoped(s,s.url))throw new Error('seed outside approved scope');
     for(const host of s.allowed_hosts){
@@ -102,11 +120,15 @@ export async function collect(config:Config, output:string){
     try{if(await readFile(contractFile,'utf8')!==contract)throw new Error('collector contract changed');}
     catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;await atomic(contractFile,contract);}
     const entries=new Map<string,Entry>(), pages=new Map<string,Set<string>>();
-    const key=(seed:Seed,url:string,variant?:Variant)=>hash(JSON.stringify(variant?[seed.id,url,variant]:[seed.id,url]));
+    const key=(seed:Seed,url:string,variant?:Variant)=>{
+      const identity=sourceIdentity(seed,url);
+      return hash(JSON.stringify(variant?[identity.project,identity.address,variant]:[identity.project,identity.address]));
+    };
     const reservePage=(seed:Seed,url:string)=>{
-      let urls=pages.get(seed.id);if(!urls){urls=new Set();pages.set(seed.id,urls);}
-      if(!urls.has(url)&&urls.size>=config.max_pages_per_project)return false;
-      urls.add(url);return true;
+      const identity=sourceIdentity(seed,url);
+      let urls=pages.get(identity.project);if(!urls){urls=new Set();pages.set(identity.project,urls);}
+      if(!urls.has(identity.address)&&urls.size>=config.max_pages_per_project)return false;
+      urls.add(identity.address);return true;
     };
     for(const file of (await readdir(results)).filter(f=>/^[a-f0-9]{64}\.json$/.test(f)).sort()){
       const entry:Entry=JSON.parse(await readFile(join(results,file),'utf8'));
@@ -172,6 +194,8 @@ export async function collect(config:Config, output:string){
         const id=request.userData.id as string, entry=entries.get(id);
         if(!entry)throw new Error('missing collector reservation');
         if(entry.status!=='queued')return;
+        const identity=sourceIdentity(entry.seed,entry.url);
+        const baseId=hash(JSON.stringify([identity.project,identity.address,'initial']));
         try{
           if(!(await robotsFor(entry.url)).isAllowed(entry.url)){
             entry.status='skipped';entry.error='robotsTxt';await persist(id,entry);return;
@@ -198,20 +222,19 @@ export async function collect(config:Config, output:string){
             await visitSource(ready,sourceRequest,async({assets:sourceAssets})=>{
               await discover();
               if(javascriptErrors)throw new SourceRejected('source JavaScript error');
-              const seed=parseInt(hash(JSON.stringify([entry.seed.id,entry.url,variant.operator])).slice(0,8),16);
+              const seed=parseInt(hash(JSON.stringify([identity.project,identity.address,variant.operator])).slice(0,8),16);
               const result=await capturePreparedPage(ready,{...variant.profile,operator:variant.operator,seed});
               if(javascriptErrors)throw new SourceRejected('source JavaScript error');
               if(!result.status.startsWith('accepted')){entry.status='live-rejected';entry.error=JSON.stringify({status:result.status,evidence:result.evidence});return;}
               if(result.rollback!==true||result.capture_mode!=='live-session')throw new Error('unverified live capture');
               const html=await sourceDocument(ready,true);
               if(Buffer.byteLength(html)>2000000)throw new SourceRejected('source HTML size limit');
-              const baseId=hash(JSON.stringify([entry.seed.id,entry.url,'initial']));
               const source={html,assets:structuredClone(sourceAssets),base_scene_id:baseId,
-                source_project_id:entry.seed.id,template_lineage_id:entry.seed.id,split_group:'web-project:'+entry.seed.id,
+                source_project_id:identity.project,template_lineage_id:identity.project,split_group:'web-project:'+identity.project,
                 structural_family_id:entry.seed.family,corpus:'unclassified',render_mode:'live-session',capture_mode:'live-session',
                 state_id:'initial',source_sha256:hash(Buffer.from(result.reference!,'base64')),
                 provenance:{license:entry.seed.license,assets_rights:'unverified',public_release_status:'research_only',
-                  source_url:entry.url,revision:hash(html),origin:'web-crawl',capture_mode:'live-session',collector_revision:codeRevision}};
+                  ...identity.provenance,revision:hash(html),capture_mode:'live-session',collector_revision:codeRevision}};
               const payload={...variant.profile,operator:variant.operator,seed,source,scene:null,locale:'en-US',generator_revision:codeRevision};
               const content=JSON.stringify({payload,result});
               if(Buffer.byteLength(content)>32*2**20)throw new SourceRejected('live case byte limit');
@@ -222,16 +245,17 @@ export async function collect(config:Config, output:string){
           }else{
           const source=await captureSource(ready,sourceRequest,discover);
           const {reference,elements,...metadata}=source;
+          const sceneId=entry.seed.repository?baseId:source.scene_id;
           const imageHash=await saveAsset(assets,reference);
           if(imageHash!==source.source_sha256||imageHash!==source.restored_sha256)throw new Error('collector source checksum');
           const sidecars:Record<string,string>={};
-          if(elements)sidecars.elements=await saveAsset(assets,Buffer.from(JSON.stringify({schema_version:'lumen.elements.v1',scene_id:source.scene_id,elements})));
-          entry.record={...metadata,base_scene_id:source.scene_id,image_hash:imageHash,sidecars,
-            kind:'screen',render_mode:'static',corpus:'unclassified',source_project_id:entry.seed.id,
-            template_lineage_id:entry.seed.id,split_group:'web-project:'+entry.seed.id,
+          if(elements)sidecars.elements=await saveAsset(assets,Buffer.from(JSON.stringify({schema_version:'lumen.elements.v1',scene_id:sceneId,elements})));
+          entry.record={...metadata,scene_id:sceneId,base_scene_id:sceneId,image_hash:imageHash,sidecars,
+            kind:'screen',render_mode:'static',corpus:'unclassified',source_project_id:identity.project,
+            template_lineage_id:identity.project,split_group:'web-project:'+identity.project,
             structural_family_id:entry.seed.family,provenance:{license:entry.seed.license,
-              assets_rights:'unverified',public_release_status:'research_only',source_url:entry.url,
-              revision:source.scene_id,origin:'web-crawl',capture_mode:'offline-replay'}};
+              assets_rights:'unverified',public_release_status:'research_only',...identity.provenance,
+              revision:source.scene_id,capture_mode:'offline-replay'}};
           entry.status='captured';
           }
         }catch(e){
@@ -255,7 +279,7 @@ export async function collect(config:Config, output:string){
     },storage);
     const restoredURLs=new Set<string>();
     for(const entry of [...entries.values()]){
-      const pageKey=JSON.stringify([entry.seed.id,entry.url]);
+      const pageKey=key(entry.seed,entry.url);
       if(!restoredURLs.has(pageKey)){restoredURLs.add(pageKey);await enqueue(entry.seed,entry.url,entry.depth);}
       for(const url of entry.links)await enqueue(entry.seed,url,entry.depth+1);
     }
@@ -283,7 +307,7 @@ export async function collect(config:Config, output:string){
     await rename(liveTemporary,join(root,'live-manifest.jsonl'));
     const summary={status:fatal?'failed':'completed',counts:stats,unique_sources:seenScenes.size,
       live_cases:liveCases,live_base_scenes:liveScenes.size,reserved_pages:[...pages.values()].reduce((n,s)=>n+s.size,0),
-      projects:new Set([...entries.values()].filter(e=>['captured','live-captured'].includes(e.status)).map(e=>e.seed.id)).size};
+      projects:new Set([...entries.values()].filter(e=>['captured','live-captured'].includes(e.status)).map(e=>sourceIdentity(e.seed,e.url).project)).size};
     await atomic(join(root,'summary.json'),JSON.stringify(summary));
     if(fatal)throw fatal;
     return summary;

@@ -25,6 +25,10 @@ test('collector requires explicit scope, hosts and finite crawl budgets',()=>{
   validateCollectorConfig(config);
   for(const change of [{max_pages_per_project:0},{concurrency:20},{max_depth:-1},
     {seeds:[{...seed,allowed_hosts:['other.invalid']}]},
+    {seeds:[{...seed,repository:{url:'https://github.com/example/dashboard',revision:'main'}}]},
+    {seeds:[{...seed,repository:{url:'https://other.invalid/example/dashboard',revision:'a'.repeat(40)}}]},
+    {seeds:[{...seed,repository:{url:'https://github.com/u:p@example/dashboard',revision:'a'.repeat(40)}}]},
+    {seeds:[{...seed,repository:{url:'https://github.com/example/dashboard.GIT',revision:'a'.repeat(40)}}]},
     {seeds:[{...seed,scope:'/outside'}]}, {seeds:[{...seed,url:'https://u:p@example.invalid/app'}]}]){
     assert.throws(()=>validateCollectorConfig({...config,...change}));
   }
@@ -33,7 +37,7 @@ test('collector requires explicit scope, hosts and finite crawl budgets',()=>{
 test('collector captures JS, obeys robots, isolates contexts, bounds routes and resumes',async()=>{
   const root=await mkdtemp(join(tmpdir(),'lumen-collector-'));
   execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',join(root,'key.pem'),
-    '-out',join(root,'cert.pem'),'-days','1','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost'],{stdio:'ignore'});
+    '-out',join(root,'cert.pem'),'-days','1','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1'],{stdio:'ignore'});
   const hits=new Map<string,number>();let robotsStatus=200;
   const faultOutput=join(root,'fault-output');let collide=true;let collision='';
   const style='<style>body{margin:24px;font:20px Arial;background:white;color:#17212b}a{display:block}</style>';
@@ -98,8 +102,9 @@ test('collector captures JS, obeys robots, isolates contexts, bounds routes and 
     assert.equal(hits.get('/queue'),1,'saved parent was recaptured after queue failure');
     assert.equal((await readFile(join(faultOutput,'manifest.jsonl'),'utf8')).trim().split('\n').length,2);
     const liveConfig=join(root,'live-config.json'),liveOutput=join(root,'live-output');
+    const repository={url:'https://github.com/example/dashboard',revision:'a'.repeat(40)};
     await writeFile(liveConfig,JSON.stringify({...config,mode:'live-session',domain_delay_seconds:0,requests_per_minute:600,
-      seeds:[{...seed,id:'live',url:origin+'/live',scope:'/live',allowed_hosts:[`localhost:${address.port}`]}],
+      seeds:[{...seed,repository,id:'live',url:origin+'/live',scope:'/live',allowed_hosts:[`localhost:${address.port}`]}],
       live_operators:['text_clip_x','clean'],viewport_sweep:[
         {viewport:[800,600],dpr:1},{viewport:[390,844],dpr:2},
         {viewport:[844,390],dpr:1,resize_path:[[1280,720],[390,844]]}]}));
@@ -118,6 +123,53 @@ test('collector captures JS, obeys robots, isolates contexts, bounds routes and 
     assert.ok(raw.every(r=>r.result.rollback&&r.payload.source.capture_mode==='live-session'));
     assert.ok(raw.every(r=>!r.payload.source.restored_sha256));
     assert.ok(raw.filter(r=>r.result.status==='accepted_bug').length>=3);
+    assert.ok(raw.every(r=>r.payload.source.provenance.repository_url===repository.url));
+    assert.ok(raw.every(r=>r.payload.source.provenance.repository_revision===repository.revision));
+    assert.ok(raw.every(r=>r.payload.source.provenance.repository_verification==='declared'));
+    assert.ok(raw.every(r=>r.payload.source.provenance.source_route==='/live'));
+    assert.ok(raw.every(r=>r.payload.source.provenance.source_url===repository.url+'/tree/'+repository.revision));
+    const aliasConfig=join(root,'alias-config.json'),aliasOutput=join(root,'alias-output');
+    await writeFile(aliasConfig,JSON.stringify({...config,mode:'live-session',domain_delay_seconds:0,requests_per_minute:600,max_pages_per_project:1,
+      seeds:[{...seed,repository,id:'alternate',url:`https://127.0.0.1:${address.port}/live`,scope:'/live',allowed_hosts:[`127.0.0.1:${address.port}`]},
+        {...seed,repository,id:'second-alias',url:origin+'/live',scope:'/live',allowed_hosts:[`localhost:${address.port}`]}],
+      live_operators:['text_clip_x','clean'],viewport_sweep:[{viewport:[800,600],dpr:1}]}));
+    await promisify(execFile)('node',['--experimental-strip-types','browser/collector.ts',aliasConfig,aliasOutput],
+      {env:{...process.env,CURL_CA_BUNDLE:join(root,'cert.pem'),NODE_EXTRA_CA_CERTS:join(root,'cert.pem')},timeout:120000,maxBuffer:2**20});
+    const aliases=(await readFile(join(aliasOutput,'live-manifest.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+    assert.equal(aliases.length,2);
+    const aliasSummary=JSON.parse(await readFile(join(aliasOutput,'summary.json'),'utf8'));
+    assert.equal(aliasSummary.reserved_pages,1);assert.equal(aliasSummary.projects,1);
+    for(const alias of aliases){
+      const current=JSON.parse(await readFile(join(aliasOutput,'live-cases',alias.sha256+'.json'),'utf8'));
+      const previous=raw.find(r=>r.payload.operator===current.payload.operator&&r.payload.viewport[0]===800);
+      assert.ok(previous);
+      for(const field of ['base_scene_id','source_project_id','split_group'])assert.equal(current.payload.source[field],previous.payload.source[field]);
+      assert.equal(current.payload.seed,previous.payload.seed,'temporary serving address changed mutation seed');
+      assert.equal(current.result.current,previous.result.current);
+    }
+    const revisionConfig=join(root,'revision-config.json'),revisionOutput=join(root,'revision-output');
+    const next=JSON.parse(await readFile(aliasConfig,'utf8'));
+    next.seeds=next.seeds.slice(0,1);next.seeds[0].repository.revision='b'.repeat(40);next.live_operators=['clean'];
+    await writeFile(revisionConfig,JSON.stringify(next));
+    await promisify(execFile)('node',['--experimental-strip-types','browser/collector.ts',revisionConfig,revisionOutput],
+      {env:{...process.env,CURL_CA_BUNDLE:join(root,'cert.pem'),NODE_EXTRA_CA_CERTS:join(root,'cert.pem')},timeout:120000,maxBuffer:2**20});
+    const revised=JSON.parse((await readFile(join(revisionOutput,'live-manifest.jsonl'),'utf8')).trim());
+    const revisionCase=JSON.parse(await readFile(join(revisionOutput,'live-cases',revised.sha256+'.json'),'utf8'));
+    assert.equal(revisionCase.payload.source.split_group,raw[0].payload.source.split_group,'repository revisions escaped their shared split');
+    assert.notEqual(revisionCase.payload.source.base_scene_id,raw[0].payload.source.base_scene_id);
+    const offlineConfig=join(root,'repository-offline.json'),offlineOutput=join(root,'repository-offline');
+    await writeFile(offlineConfig,JSON.stringify({...config,mode:'offline-replay',max_depth:0,domain_delay_seconds:0,requests_per_minute:600,
+      seeds:[{...seed,repository,id:'offline',url:origin+'/other',scope:'/other',allowed_hosts:[`localhost:${address.port}`]}]}));
+    await promisify(execFile)('node',['--experimental-strip-types','browser/collector.ts',offlineConfig,offlineOutput],
+      {env:{...process.env,CURL_CA_BUNDLE:join(root,'cert.pem'),NODE_EXTRA_CA_CERTS:join(root,'cert.pem')},timeout:120000,maxBuffer:2**20});
+    const offline=JSON.parse((await readFile(join(offlineOutput,'manifest.jsonl'),'utf8')).trim());
+    assert.equal(offline.scene_id,offline.base_scene_id);
+    assert.notEqual(offline.base_scene_id,raw[0].payload.source.base_scene_id,'distinct routes share a scene identity');
+    assert.equal(offline.split_group,raw[0].payload.source.split_group);
+    assert.equal(offline.provenance.repository_revision,repository.revision);
+    assert.equal(offline.source_sha256,offline.restored_sha256);
+    const annotation=JSON.parse(await readFile(join(offlineOutput,'assets',offline.sidecars.elements),'utf8'));
+    assert.equal(annotation.scene_id,offline.base_scene_id,'annotation sidecar lost canonical scene identity');
     const liveRun=join(root,'live-run'),liveExport=join(root,'live-yolo');
     const imported=await promisify(execFile)('python',['-m','lumen_data.cli','sources','import-live',
       '--manifest',join(liveOutput,'live-manifest.jsonl'),'--assets',join(liveOutput,'assets'),'--run',liveRun],
