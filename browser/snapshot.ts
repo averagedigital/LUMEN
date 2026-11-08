@@ -41,8 +41,11 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
     const pointerStyle = document.createElement('style');
     pointerStyle.textContent = '*,*::before,*::after{pointer-events:auto!important}';
     document.head.append(pointerStyle);
+    // A modal backdrop hit resolves to its dialog, including stacked modals.
+    const modal = document.elementFromPoint(0, 0)?.closest('dialog:modal') ?? null;
     const result = elements.flatMap((el, i) => {
       el.dataset.lumenId ??= el.dataset.elementId ?? String(i);
+      if (modal && !modal.contains(el)) return [];
       if (!el.checkVisibility({contentVisibilityAuto: true})) return [];
       const style = getComputedStyle(el), bounds = el.getBoundingClientRect();
       if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0 ||
@@ -81,6 +84,7 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
           if (color.length === 3 || color[3] === 1) background = css.backgroundColor;
           else if (color[3] > 0) backgroundComplex = true;
         }
+        if (ancestor.matches('dialog:modal')) break;
       }
       if (effectiveOpacity < .99) return [];
       const fragments = Array.from(range.getClientRects());
