@@ -31,7 +31,10 @@ ARCHETYPES = GRAMMAR_V2
 REALISTIC_OPERATORS = ('font_size_regression', 'nowrap_regression', 'word_break_regression',
                        'letter_spacing_regression', 'line_height_regression',
                        'font_family_regression', 'text_indent_regression',
-                       'relative_offset_regression', 'padding_box_regression')
+                       'relative_offset_regression', 'padding_box_regression',
+                       'flex_wrap_regression', 'header_negative_margin',
+                       'table_fixed_layout_regression', 'dropdown_ancestor_overflow',
+                       'image_object_fit_regression', 'svg_viewbox_removal')
 OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_partial_cutoff',
               'sibling_occlusion') + ('flex_overflow', 'grid_track_collapse', 'container_height_collapse',
               'header_collision', 'table_cell_overlap', 'dropdown_clipping', 'modal_content_overflow',

@@ -4,7 +4,7 @@ import { apply, discover, OPERATORS, type Operator } from './mutations.ts';
 import { validate, textProblems, type Finding } from './validate.ts';
 import { annotations, visibleScenarios } from './annotations.ts';
 import { COMPONENT_OPERATORS, componentSnapshot, componentBaselineProblems,
-  discoverComponent, applyComponent, validateComponents } from './component_defects.ts';
+  discoverComponent, applyComponent, validateComponents, componentSymptom } from './component_defects.ts';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -122,7 +122,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const scenario_tags = await visibleScenarios(page);
     const elements = request.annotations ? await annotations(page) : undefined;
     const before = await snapshot(page);
-    const componentsBefore = await componentSnapshot(page);
+    const discoverLayouts = request.operator === 'flex_wrap_regression';
+    const componentsBefore = await componentSnapshot(page, discoverLayouts);
     const componentOperator = COMPONENT_OPERATORS.some(name => name === request.operator);
     const componentCandidates = discoverComponent(componentsBefore, request.operator);
     const realisticOperator = REALISTIC_OPERATORS.some(name => name === request.operator);
@@ -140,6 +141,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const captured = performance.now();
     const styles = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('body,body *'))
       .map(el => el.getAttribute('style')));
+    const svgViewBoxes = request.operator === 'svg_viewbox_removal' ? await page.evaluate(() =>
+      Array.from(document.querySelectorAll('svg')).map(el => el.getAttribute('viewBox'))) : null;
     const operator = request.operator as Operator;
     let receipt: unknown = null;
     let interaction: CaptureResult['interaction'];
@@ -165,12 +168,12 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const after = await snapshot(page);
     const statesAfter = request.annotations ? await annotations(page) : undefined;
     const scrollAfter = await page.evaluate(() => [scrollX, scrollY]);
-    const componentsAfter = await componentSnapshot(page);
+    const componentsAfter = await componentSnapshot(page, discoverLayouts);
     let issues = [...validate(before, after, viewport, dpr),
       ...validateComponents(componentsBefore, componentsAfter, viewport, dpr)];
     const validAfter = !negative || (!textProblems(after, viewport).length && !componentBaselineProblems(componentsAfter).length);
     if (componentOperator && receipt) {
-      issues = await componentIssues(page, issues, (receipt as {target: string}).target, operator);
+      issues = await componentIssues(page, issues, (receipt as {target: string}).target, componentSymptom(operator));
     }
     if (realisticOperator && receipt) {
       const mutation = receipt as Awaited<ReturnType<typeof applyRealistic>>;
@@ -182,6 +185,9 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     await page.evaluate(styles => Array.from(document.querySelectorAll<HTMLElement>('body,body *')).forEach((el, i) => {
       if (styles[i] === null) el.removeAttribute('style'); else el.setAttribute('style', styles[i]);
     }), styles);
+    if (svgViewBoxes) await page.evaluate(values => document.querySelectorAll('svg').forEach((el, i) => {
+      if (values[i] === null) el.removeAttribute('viewBox'); else el.setAttribute('viewBox', values[i]!);
+    }), svgViewBoxes);
     await page.evaluate(({detailsBefore, dialogsBefore, activeBefore, scrollBefore}) => {
       document.querySelectorAll('details').forEach((el, i) => { el.open = detailsBefore[i]; });
       document.querySelectorAll('dialog').forEach((el, i) => {
@@ -204,7 +210,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     if (operator === 'clean' && !changed && issues.length === 0) status = 'accepted_clean';
     else if (operator.startsWith('benign_') && changed && issues.length === 0 && validAfter) status = 'accepted_benign_change';
     else if (changed && issues.some(issue => realisticOperator ?
-      issue.id === (receipt as {target: string}).target && TEXT_SYMPTOMS.includes(issue.symptom) : issue.symptom === operator)) status = 'accepted_bug';
+      issue.id === (receipt as {target: string}).target && TEXT_SYMPTOMS.includes(issue.symptom) :
+      issue.symptom === componentSymptom(operator))) status = 'accepted_bug';
     else if (!changed) status = 'no_visible_effect';
     return {status, issues, receipt, reference: reference.toString('base64'), current: current.toString('base64'),
       rollback: true, browser: browser.version(), elements, statesAfter, interaction, scrollBefore, scrollAfter, scenario_tags,

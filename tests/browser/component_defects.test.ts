@@ -85,7 +85,7 @@ test('scrollable table, object-fit contain and viewBox SVG are valid without exe
         await page.close();
     }
 });
-test('operator catalogue contains ten distinct component mechanisms', () => { assert.equal(new Set(COMPONENT_OPERATORS).size, 10); });
+test('operator catalogue contains sixteen distinct component mechanisms', () => { assert.equal(new Set(COMPONENT_OPERATORS).size, 16); });
 for (const [operator, html] of Object.entries(fixtures)) {
     test(`${operator}: ordinary valid counterpart needs no exemption marker`, async () => {
         const page = await browser.newPage({ viewport: { width: 900, height: 700 } });

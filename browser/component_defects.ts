@@ -8,7 +8,16 @@ const SYMPTOMS = {
     modal: 'modal_content_overflow', adornment: 'input_adornment_collision',
     image: 'image_aspect_distortion', svg: 'svg_clipping',
 } as const;
-export const COMPONENT_OPERATORS = Object.values(SYMPTOMS);
+const MECHANISMS = {
+    flex_wrap_regression: 'flex', header_negative_margin: 'header',
+    table_fixed_layout_regression: 'table', dropdown_ancestor_overflow: 'dropdown',
+    image_object_fit_regression: 'image', svg_viewbox_removal: 'svg',
+} as const;
+export const COMPONENT_OPERATORS = [...Object.values(SYMPTOMS), ...Object.keys(MECHANISMS)];
+export function componentSymptom(operator: string): string {
+    const kind = MECHANISMS[operator as keyof typeof MECHANISMS];
+    return kind ? SYMPTOMS[kind] : operator;
+}
 export type ComponentKind = keyof typeof SYMPTOMS;
 export type ComponentState = {
     id: string;
@@ -33,9 +42,12 @@ export type ComponentReceipt = {
     target: string;
     params: Record<string, unknown>;
     cause_region_css: Rect;
+    mechanism_id?: string;
+    expected_symptom?: string;
+    search?: {strategy: string; attempts: number; limit: number};
 };
-export async function componentSnapshot(page: Page): Promise<ComponentState[]> {
-    return page.evaluate(() => {
+export async function componentSnapshot(page: Page, discoverLayouts = false): Promise<ComponentState[]> {
+    return page.evaluate(discoverLayouts => {
         const all = Array.from(document.querySelectorAll<HTMLElement>('body *'));
         if (all.length > 5000)
             throw new Error('scene_limit: component elements');
@@ -155,7 +167,8 @@ export async function componentSnapshot(page: Page): Promise<ComponentState[]> {
             if (modal && !modal.contains(el))
                 continue;
             const explicit = el.dataset.lumenComponent;
-            const kind = explicit ?? (el.tagName === 'HEADER' ? 'header' : el.tagName === 'TABLE' ? 'table' : el.tagName === 'IMG' ? 'image' : el.tagName.toLowerCase() === 'svg' ? 'svg' : el.getAttribute('role') === 'menu' ? 'dropdown' : (el.tagName === 'DIALOG' || el.getAttribute('role') === 'dialog') ? 'modal' : null);
+            const kind = explicit ?? (el.tagName === 'HEADER' ? 'header' : el.tagName === 'TABLE' ? 'table' : el.tagName === 'IMG' ? 'image' : el.tagName.toLowerCase() === 'svg' ? 'svg' : el.getAttribute('role') === 'menu' ? 'dropdown' : (el.tagName === 'DIALOG' || el.getAttribute('role') === 'dialog') ? 'modal' :
+                discoverLayouts && ['flex', 'inline-flex'].includes(getComputedStyle(el).display) ? 'flex' : null);
             if (!kind || !['flex', 'grid', 'panel', 'header', 'table', 'dropdown', 'modal', 'adornment', 'image', 'svg'].includes(kind))
                 continue;
             const css = getComputedStyle(el), r = rect(el.getBoundingClientRect());
@@ -217,7 +230,7 @@ export async function componentSnapshot(page: Page): Promise<ComponentState[]> {
                     overlap, clipped: total ? 1 - shown / total : 0, gridOverflow, distortion, children: children.length, viewBox: el.hasAttribute('viewBox') } });
         }
         return result;
-    });
+    }, discoverLayouts);
 }
 function broken(state: ComponentState): boolean {
     if (state.intentional)
@@ -238,10 +251,12 @@ function broken(state: ComponentState): boolean {
 }
 export function componentBaselineProblems(states: ComponentState[]): ComponentState[] { return states.filter(broken); }
 export function discoverComponent(states: ComponentState[], operator: string): ComponentState[] {
-    return states.filter(s => SYMPTOMS[s.kind] === operator && !s.intentional && !broken(s) && s.visible.width >= s.rect.width - .5 && s.visible.height >= s.rect.height - .5 && s.rect.width > 50 && s.rect.height > 20 &&
-        (['image', 'svg'].includes(s.kind) || s.metrics.children >= (['flex', 'grid', 'header', 'table', 'adornment'].includes(s.kind) ? 2 : 1)) && !(s.kind === 'svg' && s.metrics.viewBox));
+    return states.filter(s => SYMPTOMS[s.kind] === componentSymptom(operator) && !s.intentional && !broken(s) && s.visible.width >= s.rect.width - .5 && s.visible.height >= s.rect.height - .5 && s.rect.width > 50 && s.rect.height > 20 &&
+        (['image', 'svg'].includes(s.kind) || s.metrics.children >= (['flex', 'grid', 'header', 'table', 'adornment'].includes(s.kind) ? 2 : 1)) &&
+        (s.kind !== 'svg' || (operator === 'svg_viewbox_removal' ? s.metrics.viewBox : !s.metrics.viewBox)));
 }
 export async function applyComponent(page: Page, operator: string, target: ComponentState, _states: ComponentState[], seed: number): Promise<ComponentReceipt> {
+    if (operator in MECHANISMS) return applyMechanism(page, operator, target);
     if (SYMPTOMS[target.kind] !== operator)
         throw new Error('component operator/target mismatch');
     const ratio = .4 + (seed % 3) * .05;
@@ -308,6 +323,47 @@ export async function applyComponent(page: Page, operator: string, target: Compo
         }
     }, { id: target.id, operator, ratio });
     return { operator, target: target.id, params: { ratio }, cause_region_css: target.rect };
+}
+
+async function applyMechanism(page: Page, operator: string, target: ComponentState): Promise<ComponentReceipt> {
+    const values = operator === 'header_negative_margin' ? [.05, .1, .15, .2, .3, .4] : [1];
+    let attempts = 0;
+    const cause = await page.evaluate(({id, operator}) => {
+        const el = document.querySelector<HTMLElement>(`[data-lumen-component-id="${CSS.escape(id)}"]`);
+        if (!el) throw new Error('component target missing');
+        const changed = operator === 'header_negative_margin' ? el.children[1] :
+            operator === 'dropdown_ancestor_overflow' ? el.parentElement : el;
+        if (!changed) throw new Error('component cause missing');
+        const box = changed.getBoundingClientRect();
+        return {x: box.x, y: box.y, width: box.width, height: box.height};
+    }, {id: target.id, operator});
+    for (const value of values) {
+        attempts++;
+        await page.evaluate(({id, operator, value, rect}) => {
+            const el = document.querySelector<HTMLElement>(`[data-lumen-component-id="${CSS.escape(id)}"]`);
+            if (!el) throw new Error('component target missing');
+            let changed = el;
+            if (operator === 'flex_wrap_regression') el.style.flexWrap = 'nowrap';
+            else if (operator === 'header_negative_margin') {
+                changed = el.children[1] as HTMLElement;
+                changed.style.marginLeft = `${-rect.width * value}px`;
+            } else if (operator === 'table_fixed_layout_regression') el.style.tableLayout = 'fixed';
+            else if (operator === 'dropdown_ancestor_overflow') {
+                if (!el.parentElement || el.parentElement === document.body) return;
+                changed = el.parentElement;
+                changed.style.overflow = 'hidden';
+            } else if (operator === 'image_object_fit_regression') el.style.objectFit = 'fill';
+            else if (operator === 'svg_viewbox_removal') el.removeAttribute('viewBox');
+            else throw new Error('unknown component mechanism');
+        }, {id: target.id, operator, value, rect: target.rect});
+        const after = await componentSnapshot(page, operator === 'flex_wrap_regression');
+        if (after.some(s => s.id === target.id && broken(s))) {
+            return {operator, mechanism_id: operator, expected_symptom: componentSymptom(operator), target: target.id,
+                params: {value}, cause_region_css: cause, search: {strategy: 'bounded_linear', attempts, limit: values.length}};
+        }
+    }
+    return {operator, mechanism_id: operator, expected_symptom: componentSymptom(operator), target: target.id,
+        params: {value: null}, cause_region_css: cause, search: {strategy: 'bounded_linear', attempts, limit: values.length}};
 }
 export function validateComponents(before: ComponentState[], after: ComponentState[], viewport: [
     number,
