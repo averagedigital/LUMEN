@@ -11,7 +11,7 @@ TypeScript, Playwright, Python, OpenCV, SQLite.
 
 ```sh
 docker build -t lumen-data .
-docker run --rm lumen-data lumen-data --help
+docker run --rm --init lumen-data lumen-data --help
 ```
 
 Команды CLI: `sources`, `generate`, `qa`, `review`, `export`, `reproduce`.
@@ -29,7 +29,8 @@ docker run --rm lumen-data lumen-data --help
 окном инициализации 1000 мс и 100 мс на шаг resize; затем таймеры приостановлены.
 Доступны только локальные ресурсы с проверкой SHA-256. Ошибки JS и недостающие
 ресурсы отклоняют пример. Запускайте обработку недоверенных источников в отдельном
-контейнере без сети, секретов и доступа к файловой системе хоста.
+контейнере с `--init`, без сети, секретов и доступа к файловой системе хоста.
+`--init` необходим для сбора завершившихся дочерних процессов Chromium.
 `breakpoint_shift_regression` ищет поломку при сдвиге `min/max-width/height` в px
 не более чем на 64 px; другие формы media queries не покрываются этим оператором.
 `resize_stale_width_regression` требует `resize_path` и моделирует сохранённую ширину
