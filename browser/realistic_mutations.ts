@@ -66,7 +66,7 @@ export async function applyRealistic(page: Page, operator: string, target: Eleme
     }, {id: target.id, operator, initial, value});
     const after = await snapshot(page);
     const findings = validate(before, after, viewport, dpr);
-    if (findings.some(f => f.id === target.id && TEXT_SYMPTOMS.includes(f.symptom))) {
+    if (findings.some(f => TEXT_SYMPTOMS.includes(f.symptom))) {
       accepted = value;
       break;
     }

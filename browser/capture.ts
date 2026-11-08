@@ -177,7 +177,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     }
     if (realisticOperator && receipt) {
       const mutation = receipt as Awaited<ReturnType<typeof applyRealistic>>;
-      mutation.symptoms = [...new Set(issues.filter(issue => issue.id === mutation.target).map(issue => issue.symptom))];
+      mutation.symptoms = [...new Set(issues.filter(issue => TEXT_SYMPTOMS.includes(issue.symptom)).map(issue => issue.symptom))];
     }
     const current = await stable(page);
     if (!current) return {status: 'unstable', issues: [], evidence: {reason: 'current_capture'}};
@@ -210,7 +210,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     if (operator === 'clean' && !changed && issues.length === 0) status = 'accepted_clean';
     else if (operator.startsWith('benign_') && changed && issues.length === 0 && validAfter) status = 'accepted_benign_change';
     else if (changed && issues.some(issue => realisticOperator ?
-      issue.id === (receipt as {target: string}).target && TEXT_SYMPTOMS.includes(issue.symptom) :
+      TEXT_SYMPTOMS.includes(issue.symptom) :
       issue.symptom === componentSymptom(operator))) status = 'accepted_bug';
     else if (!changed) status = 'no_visible_effect';
     return {status, issues, receipt, reference: reference.toString('base64'), current: current.toString('base64'),

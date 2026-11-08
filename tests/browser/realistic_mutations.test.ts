@@ -72,3 +72,17 @@ test('valid near-boundary parameter must preserve neighboring text', async () =>
     assert.equal(valid.status, 'accepted_clean', JSON.stringify(valid.evidence));
   }
 });
+
+test('threshold search detects a neighboring symptom before the cause clips', async () => {
+  const html = '<body style="background:white;color:#111;font:20px Arial;margin:32px"><div style="width:240px;height:48px;overflow:hidden"><span style="display:block;white-space:nowrap">Account settings</span><span style="display:block">Save changes</span></div></body>';
+  const request = {html, operator:'font_size_regression', seed:0, viewport:[800,600] as [number,number], dpr:1};
+  const result = await captureCase(browser, request);
+  assert.equal(result.status, 'accepted_bug');
+  const receipt = result.receipt as {target:string; params:{value:number}; symptoms:string[]};
+  assert.ok(receipt.params.value < 2, JSON.stringify(receipt));
+  assert.ok(result.issues.some(issue => issue.id !== receipt.target && issue.symptom === 'text_clip_y'));
+  assert.ok(result.issues.every(issue => issue.id !== receipt.target));
+  assert.ok(receipt.symptoms.includes('text_clip_y'));
+  assert.equal(result.rollback, true);
+  assert.equal((await captureCase(browser, request)).current, result.current);
+});
