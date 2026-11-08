@@ -51,18 +51,21 @@ export async function componentSnapshot(page: Page): Promise<ComponentState[]> {
         const union = (rs: R[]): R => { if (!rs.length)
             return { x: 0, y: 0, width: 0, height: 0 }; const x = Math.min(...rs.map(r => r.x)), y = Math.min(...rs.map(r => r.y)); return { x, y, width: Math.max(...rs.map(r => r.x + r.width)) - x, height: Math.max(...rs.map(r => r.y + r.height)) - y }; };
         let textNodes = 0;
+        let textFragments = 0;
         const modals = Array.from(document.querySelectorAll<HTMLDialogElement>('dialog:modal'));
         const modal = modals.find(dialog => {
             const box = dialog.getBoundingClientRect();
             const hit = document.elementFromPoint(Math.max(0, Math.min(innerWidth - 1, box.x + box.width / 2)), Math.max(0, Math.min(innerHeight - 1, box.y + box.height / 2)));
             return hit?.closest('dialog:modal') === dialog;
         });
-        const ink = (el: Element): R => {
+        const outOfFlow = (el: Element) => ['absolute', 'fixed'].includes(getComputedStyle(el).position);
+        const inkFragments = (el: Element, flowOnly = false, collisionOnly = false): R[] => {
+            const paint = (element: Element, box: R) => collisionOnly ? collisionVisible(element, box) : box;
             if (el instanceof SVGGraphicsElement) {
                 const b = el.getBBox(), m = el.getScreenCTM();
                 if (m) {
                     const p = [new DOMPoint(b.x, b.y), new DOMPoint(b.x + b.width, b.y), new DOMPoint(b.x, b.y + b.height), new DOMPoint(b.x + b.width, b.y + b.height)].map(p => p.matrixTransform(m));
-                    return union(p.map(p => ({ x: p.x, y: p.y, width: .001, height: .001 })));
+                    return [paint(el, union(p.map(p => ({ x: p.x, y: p.y, width: .001, height: .001 }))))];
                 }
             }
             if (el instanceof HTMLInputElement) {
@@ -76,26 +79,37 @@ export async function componentSnapshot(page: Page): Promise<ComponentState[]> {
                     const x = c.textAlign === 'center' ? (left + right - width) / 2 : alignedRight ? right - width : left;
                     const y = r.y + parseFloat(c.borderTopWidth) + parseFloat(c.paddingTop);
                     const height = parseFloat(c.lineHeight) || parseFloat(c.fontSize);
-                    return intersect({ x, y, width, height }, { x: left, y, width: Math.max(0, right - left), height });
+                    return [paint(el, intersect({ x, y, width, height }, { x: left, y, width: Math.max(0, right - left), height }))];
                 }
             }
             if (el.textContent?.trim()) {
                 const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-                let bounds: R | null = null;
+                const fragments: R[] = [];
                 let node: Node | null;
                 while ((node = walker.nextNode())) {
                     if (++textNodes > 50000)
                         throw new Error('scene_limit: component text nodes');
                     if (!node.textContent?.trim() || !node.parentElement?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }))
                         continue;
+                    if (flowOnly) {
+                        let excluded = false;
+                        for (let ancestor: Element | null = node.parentElement; ancestor && ancestor !== el.parentElement; ancestor = ancestor.parentElement) {
+                            if (outOfFlow(ancestor)) { excluded = true; break; }
+                        }
+                        if (excluded) continue;
+                    }
                     const range = document.createRange();
                     range.selectNodeContents(node);
-                    const box = rect(range.getBoundingClientRect());
-                    if (area(box)) bounds = bounds ? union([bounds, box]) : box;
+                    for (const clientRect of range.getClientRects()) {
+                        if (++textFragments > 50000)
+                            throw new Error('scene_limit: component text fragments');
+                        const box = paint(node.parentElement!, rect(clientRect));
+                        if (area(box)) fragments.push(box);
+                    }
                 }
-                return bounds ?? { x: 0, y: 0, width: 0, height: 0 };
+                return fragments;
             }
-            return rect(el.getBoundingClientRect());
+            return [paint(el, rect(el.getBoundingClientRect()))];
         };
         const visible = (el: Element, r: R, viewport = true): R => {
             let result = viewport ? intersect(r, { x: 0, y: 0, width: innerWidth, height: innerHeight }) : r;
@@ -105,6 +119,33 @@ export async function componentSnapshot(page: Page): Promise<ComponentState[]> {
                     result = intersect(result, { x: b.x, y: result.y, width: b.width, height: result.height });
                 if (['hidden', 'clip', 'auto', 'scroll'].includes(c.overflowY))
                     result = intersect(result, { x: result.x, y: b.y, width: result.width, height: b.height });
+                if (a.matches('dialog:modal')) break;
+            }
+            return result;
+        };
+        const collisionVisible = (el: Element, box: R): R => {
+            let result = intersect(box, {x: 0, y: 0, width: innerWidth, height: innerHeight});
+            let skipUntil: Element | null | undefined;
+            for (let a: Element | null = el; a; a = a.parentElement) {
+                if (a === skipUntil) skipUntil = undefined;
+                const css = getComputedStyle(a);
+                if (skipUntil === undefined) {
+                    const bounds = rect(a.getBoundingClientRect());
+                    if (['hidden', 'clip', 'auto', 'scroll'].includes(css.overflowX))
+                        result = intersect(result, {x: bounds.x, y: result.y, width: bounds.width, height: result.height});
+                    if (['hidden', 'clip', 'auto', 'scroll'].includes(css.overflowY))
+                        result = intersect(result, {x: result.x, y: bounds.y, width: result.width, height: bounds.height});
+                    if (['fixed', 'absolute'].includes(css.position)) {
+                        skipUntil = null;
+                        for (let parent = a.parentElement; parent; parent = parent.parentElement) {
+                            const style = getComputedStyle(parent);
+                            if ((css.position === 'absolute' && style.position !== 'static') || style.transform !== 'none' || style.scale !== 'none' || style.rotate !== 'none' || style.translate !== 'none' || style.perspective !== 'none' || style.filter !== 'none' || /layout|paint|strict|content/.test(style.contain) || /transform|scale|rotate|translate|perspective|filter/.test(style.willChange)) {
+                                skipUntil = parent;
+                                break;
+                            }
+                        }
+                    }
+                }
                 if (a.matches('dialog:modal')) break;
             }
             return result;
@@ -135,19 +176,22 @@ export async function componentSnapshot(page: Page): Promise<ComponentState[]> {
                 if (a.matches('dialog:modal')) break;
             }
             el.dataset.lumenComponentId ??= el.dataset.elementId ?? `comp-${index}`;
-            const children = Array.from(kind === 'table' ? el.querySelectorAll('td,th') : el.children).filter(e => e.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) && area(rect(e.getBoundingClientRect())) > 0);
-            const boxes = children.map(ink), content = union(boxes);
+            const flowOnly = ['grid', 'flex', 'panel'].includes(kind);
+            const children = Array.from(kind === 'table' ? el.querySelectorAll('td,th') : el.children).filter(e => (!flowOnly || !outOfFlow(e)) && e.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) && area(rect(e.getBoundingClientRect())) > 0);
+            const fragments = children.map(child => inkFragments(child, flowOnly, ['header', 'table', 'adornment'].includes(kind)));
+            const boxes = fragments.map(parts => union(parts)), content = union(boxes.filter(box => area(box) > 0));
             let overlap = 0;
             let overlapBox: R | null = null;
             if (['header', 'table', 'adornment'].includes(kind)) {
-                const ordered = [...boxes].sort((a, b) => a.y - b.y);
-                let active: R[] = [];
+                const ordered = fragments.flatMap((parts, owner) => parts.map(box => ({...box, owner}))).sort((a, b) => a.y - b.y);
+                let active: typeof ordered = [];
                 let comparisons = 0;
                 for (const box of ordered) {
                     active = active.filter(previous => previous.y + previous.height > box.y);
                     for (const previous of active) {
                         if (++comparisons > 100000)
                             throw new Error('scene_limit: component overlap pairs');
+                        if (previous.owner === box.owner) continue;
                         const intersection = intersect(previous, box);
                         overlap = Math.max(overlap, area(intersection));
                         if (area(intersection) > 8)
@@ -163,13 +207,13 @@ export async function componentSnapshot(page: Page): Promise<ComponentState[]> {
                 const actual = width / height, expected = el.naturalWidth / el.naturalHeight;
                 distortion = Math.max(actual / expected, expected / actual);
             }
-            const ownInk = kind === 'svg' ? ink(el) : content;
+            const ownInk = kind === 'svg' ? union(inkFragments(el)) : content;
             const paint = kind === 'svg' ? [ownInk] : boxes;
             const total = paint.reduce((n, b) => n + area(b), 0), shown = paint.reduce((n, b) => n + area(visible(el, b, false)), 0);
             const gridOverflow = children.reduce((n, e, i) => Math.max(n, boxes[i].width - rect(e.getBoundingClientRect()).width), 0);
-            result.push({ id: el.dataset.lumenComponentId, kind: kind as ComponentKind, rect: r, visible: visible(el, r), issueRect: overlapBox ? overlapBox : ['flex', 'panel'].includes(kind) && children.length ? union([r, content]) : visible(el, r), intentional,
-                metrics: { overflowX: children.length ? Math.max(0, content.x + content.width - r.x - r.width, r.x - content.x) : 0,
-                    overflowY: children.length ? Math.max(0, content.y + content.height - r.y - r.height, r.y - content.y) : 0,
+            result.push({ id: el.dataset.lumenComponentId, kind: kind as ComponentKind, rect: r, visible: visible(el, r), issueRect: overlapBox ? overlapBox : ['flex', 'panel'].includes(kind) && area(content) > 0 ? union([r, content]) : visible(el, r), intentional,
+                metrics: { overflowX: area(content) > 0 ? Math.max(0, content.x + content.width - r.x - r.width, r.x - content.x) : 0,
+                    overflowY: area(content) > 0 ? Math.max(0, content.y + content.height - r.y - r.height, r.y - content.y) : 0,
                     overlap, clipped: total ? 1 - shown / total : 0, gridOverflow, distortion, children: children.length, viewBox: el.hasAttribute('viewBox') } });
         }
         return result;

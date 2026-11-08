@@ -299,3 +299,101 @@ test('modal overflow expands real nested content rather than an empty spacer', a
         assert.deepEqual(await page.screenshot(), reference);
     } finally { await page.close(); }
 });
+
+test('viewport cutoff in a dashboard preserves grid flow without a grid defect', async () => {
+    const { buildScene } = await import('../../scenes/grammar.ts');
+    const { captureCase } = await import('../../browser/capture.ts');
+    const scene = buildScene({seed: 15, archetype: 'dashboard', locale: 'en', width: 1280});
+    const result = await captureCase(browser, {html: scene.html, operator: 'viewport_partial_cutoff', seed: 42, viewport: [1280,960], dpr: 1});
+    assert.equal(result.status, 'accepted_bug');
+    assert.ok(result.issues.some(issue => issue.symptom === 'viewport_partial_cutoff'));
+    assert.equal(result.issues.some(issue => issue.symptom === 'grid_track_collapse'), false);
+});
+
+for (const kind of ['grid', 'flex', 'panel']) for (const position of ['fixed', 'absolute']) for (const nested of [false, true]) {
+    test(`${kind} flow excludes ${position} ${nested ? 'descendants' : 'children'}`, async () => {
+        const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+        try {
+            await page.setContent(pageHTML(`<section data-lumen-component="${kind}" style="position:relative;display:${kind === 'panel' ? 'block' : kind};grid-template-columns:1fr 1fr;width:500px;height:180px"><article ${nested ? '' : 'id="move"'}>Normal content${nested ? '<span id="move"> movable content</span>' : ''}</article><article>Other content</article></section>`));
+            const before = await componentSnapshot(page);
+            assert.deepEqual(componentBaselineProblems(before), []);
+            await page.locator('#move').evaluate((el, position) => { Object.assign(el.style, {position, left: '1000px', top: '500px', whiteSpace: 'nowrap'}); }, position);
+            const after = await componentSnapshot(page);
+            assert.deepEqual(componentBaselineProblems(after), []);
+            assert.deepEqual(validateComponents(before, after, [900,700], 1), []);
+        } finally { await page.close(); }
+    });
+}
+
+for (const collision of [false, true]) {
+    test(`fixed descendant fragments ${collision ? 'retain real collision' : 'do not collide across an empty gap'}`, async () => {
+        const page = await browser.newPage({ viewport: { width: 1280, height: 700 } });
+        try {
+            await page.setContent('<body style="margin:0;font:20px Arial"><header style="position:relative;width:1100px;height:120px"><div style="position:absolute;left:40px;top:40px">Left<span id="move" style="position:fixed;left:80px;top:80px">Moved text</span></div><div style="position:absolute;left:390px;top:40px">Stationary content</div></header></body>');
+            const before = await componentSnapshot(page);
+            assert.deepEqual(componentBaselineProblems(before), []);
+            const clip = {x:380,y:35,width:220,height:35};
+            const reference = await page.screenshot({clip});
+            await page.locator('#move').evaluate((el, collision) => { el.style.left = collision ? '400px' : '900px'; el.style.top = '40px'; }, collision);
+            const after = await componentSnapshot(page);
+            const findings = validateComponents(before, after, [1280,700], 1);
+            if (collision) {
+                assert.equal(findings.length, 1);
+                assert.equal(findings[0].symptom, 'header_collision');
+                assert.notDeepEqual(await page.screenshot({clip}), reference);
+            } else {
+                assert.deepEqual(findings, []);
+                assert.deepEqual(componentBaselineProblems(after), []);
+                assert.deepEqual(await page.screenshot({clip}), reference);
+            }
+        } finally { await page.close(); }
+    });
+}
+
+test('multiline text does not collide with a sibling in the line spacing', async () => {
+    const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+    try {
+        await page.setContent('<body style="margin:0;font:20px Arial"><header style="position:relative;width:500px;height:200px"><div style="position:absolute;left:20px;top:0;width:150px;line-height:80px">First<br>Second</div><div style="position:absolute;left:20px;top:64px;font-size:12px;line-height:14px">Between lines</div></header></body>');
+        assert.deepEqual(componentBaselineProblems(await componentSnapshot(page)), []);
+    } finally { await page.close(); }
+});
+
+for (const nested of [false, true]) {
+    test(`ellipsis paint does not collide outside its ${nested ? 'nested' : 'direct'} clip`, async () => {
+        const page = await browser.newPage({ viewport: { width: 900, height: 500 } });
+        try {
+            const label = '<span style="display:block;width:100px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA</span>';
+            await page.setContent(`<body style="margin:40px;font:20px Arial"><header style="position:relative;width:600px;height:100px">${nested ? '<div style="position:absolute;top:0;left:0">'+label+'</div>' : label}<div style="position:absolute;top:0;left:200px">Stationary content</div></header></body>`);
+            assert.deepEqual(componentBaselineProblems(await componentSnapshot(page)), []);
+        } finally { await page.close(); }
+    });
+}
+
+for (const position of ['fixed','absolute']) {
+    test(`${position} collision remains visible when it escapes an unrelated overflow clip`, async () => {
+        const page = await browser.newPage({ viewport: { width: 900, height: 500 } });
+        try {
+            await page.setContent(`<body style="margin:40px;font:20px Arial"><header style="position:relative;width:600px;height:100px"><div style="width:100px;overflow:hidden"><span id="move" style="position:${position};left:600px;top:${position === 'fixed' ? 40 : 0}px;white-space:nowrap">Moving label</span>Left</div><div style="position:absolute;top:0;left:200px">Stationary content</div></header></body>`);
+            const before = await componentSnapshot(page);
+            assert.deepEqual(componentBaselineProblems(before), []);
+            await page.locator('#move').evaluate((el,position) => {el.style.left=position==='fixed'?'240px':'200px';},position);
+            const after = await componentSnapshot(page);
+            assert.equal(validateComponents(before,after,[900,500],1).length,1);
+        } finally { await page.close(); }
+    });
+}
+
+for (const transform of ['transform:scale(1)', 'scale:1', 'rotate:0deg', 'translate:0px', 'will-change:scale']) {
+    test(`fixed content respects clipping in containing block ${transform}`, async () => {
+        const page = await browser.newPage({ viewport: { width: 900, height: 500 } });
+        try {
+            await page.setContent(`<body style="margin:40px;font:20px Arial"><header style="position:relative;width:600px;height:100px"><div style="width:100px;height:30px;overflow:hidden;${transform}">Left<span id="move" style="position:fixed;left:200px;top:0;white-space:nowrap">Moving label</span></div><div style="position:absolute;top:0;left:200px">Stationary content</div></header></body>`);
+            const clip = {x:230,y:35,width:200,height:35};
+            const visible = await page.screenshot({clip});
+            const states = await componentSnapshot(page);
+            await page.locator('#move').evaluate(el => {el.style.visibility='hidden';});
+            assert.deepEqual(await page.screenshot({clip}),visible);
+            assert.deepEqual(componentBaselineProblems(states), []);
+        } finally { await page.close(); }
+    });
+}
