@@ -1,4 +1,11 @@
 sources:
+  - id: webui-code
+    repository: ronantakizawa/webui
+    config: default
+    role: browser_mutation_source
+    license: mixed
+    assets_rights: unknown
+    public_release_status: research_only
   - id: github
     url: https://github.com
     role: real_bug_review_pool
