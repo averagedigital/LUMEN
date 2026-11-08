@@ -65,7 +65,8 @@ export async function snapshot(page: Page): Promise<ElementState[]> {
       for (let ancestor: HTMLElement | null = el; ancestor; ancestor = ancestor.parentElement) {
         if (ancestor === skipClipUntil) skipClipUntil = undefined;
         const css = getComputedStyle(ancestor), r = ancestor.getBoundingClientRect();
-        if (['absolute', 'fixed'].includes(css.position) && r.width <= 1 && r.height <= 1 &&
+        // Recognize the hiding pattern before ancestor transforms scale its box.
+        if (['absolute', 'fixed'].includes(css.position) && parseFloat(css.width) <= 1 && parseFloat(css.height) <= 1 &&
             css.overflowX === 'hidden' && css.overflowY === 'hidden' &&
             (css.clip.replace(/[,\s]/g, '') === 'rect(0px0px0px0px)' || css.clipPath === 'inset(50%)')) return [];
         effectiveOpacity *= Number(css.opacity);
