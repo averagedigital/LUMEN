@@ -24,10 +24,14 @@ from .contracts import Box, canonical, case_id, group_split, validate_case, GRAM
 from .resource_guard import guard
 from .storage import Store
 from .asset_validation import raster_pixels
+from .renderable import structural_identity
+from .similarity import audit_cross_split
 
 ARCHETYPES = GRAMMAR_V2
 OPERATORS = (('text_clip_x', 'text_clip_y', 'text_contrast_failure', 'viewport_partial_cutoff',
-              'sibling_occlusion') * 2 + ('text_clip_x', 'text_clip_y') + ('clean',) * 5 +
+              'sibling_occlusion', 'flex_overflow', 'grid_track_collapse', 'container_height_collapse',
+              'header_collision', 'table_cell_overlap', 'dropdown_clipping', 'modal_content_overflow',
+              'input_adornment_collision', 'image_aspect_distortion', 'svg_clipping') + ('clean',) * 5 +
              ('benign_theme', 'benign_action', 'benign_action'))
 REQUEST_TIMEOUT_SECONDS = 60
 
@@ -131,6 +135,11 @@ def build_record(payload, result, assets, stats):
     archetype = source['structural_family_id'] if source else payload['scene']['archetype']
     lineage = source['template_lineage_id'] if source else f'lumen-grammar-v2/{archetype}'
     group = source['split_group'] if source and 'split_group' in source else lineage
+    structure = None
+    if not source and result.get('scene'):
+        structure = structural_identity(result['scene']['html'])
+        lineage = f'lumen-grammar-v3/{archetype}'
+        group = f'lineage:{lineage}'
     issues = []
     for index, finding in enumerate(result['issues']):
         box = Box(*finding['bbox'])
@@ -151,11 +160,18 @@ def build_record(payload, result, assets, stats):
               'assets': assets, 'has_change': stats['changed_pixels'] > 0,
               'has_single_frame_defect': bool(issues), 'issues': issues,
               'annotation_completeness': 'complete_within_declared_scope',
-              'declared_scope': ['text_clipping', 'text_contrast', 'text_occlusion', 'viewport_cutoff'],
+              'declared_scope': ['text_clipping', 'text_contrast', 'text_occlusion', 'viewport_cutoff', 'component_geometry'],
               'verification': 'auto_verified', 'mutations': [result['receipt']] if result.get('receipt') else [],
               'provenance': {'license': 'MIT', 'revision': payload['generator_revision'],
                              'public_release_status': 'approved', 'origin': 'synthetic'},
               'metrics': stats, 'timings_ms': result.get('timings', {})}
+    record['scenario_tags'] = result.get('scenario_tags', [])
+    if structure:
+        record['structure'] = structure
+    cause = (result.get('receipt') or {}).get('cause_region_css')
+    if cause:
+        box = Box.from_xywh([cause[k] for k in ('x', 'y', 'width', 'height')]).transform(dpr=payload['dpr'])
+        record['cause_region_xyxy_px'] = [max(0, box.x1), max(0, box.y1), min(width, box.x2), min(height, box.y2)]
     validate_case(record)
     if source:
         record['provenance'] = source['provenance']
@@ -401,10 +417,18 @@ def generate(config_path, run, target=None, resume=False):
 
 def qa(run):
     store = Store(run)
-    with tempfile.TemporaryDirectory(prefix='.qa-', dir=store.root) as scratch, closing(store.db):
-        guard(store.root)
-        store.db.execute('ATTACH DATABASE ? AS qa_work', (str(Path(scratch) / 'index.sqlite'),))
-        return audit_cases(store)
+    report = store.root / 'qa.json'
+    with closing(store.db):
+        report.write_text(canonical({'qa': 'running'}) + '\n')
+        try:
+            with tempfile.TemporaryDirectory(prefix='.qa-', dir=store.root) as scratch:
+                guard(store.root)
+                store.db.execute('ATTACH DATABASE ? AS qa_work', (str(Path(scratch) / 'index.sqlite'),))
+                return audit_cases(store)
+        except Exception as error:
+            if json.loads(report.read_text())['qa'] == 'running':
+                report.write_text(canonical({'qa': 'failed', 'error': str(error)}) + '\n')
+            raise
 
 
 def audit_cases(store):
@@ -451,6 +475,8 @@ def audit_cases(store):
     near, cross = store.db.execute('''SELECT count(*), coalesce(sum(cross_split),0) FROM (
         SELECT signature,count(DISTINCT split)>1 AS cross_split FROM qa_work.signatures
         GROUP BY signature HAVING count(DISTINCT scene)>1)''').fetchone()
+    similarity = audit_cross_split(store, store.db.execute(
+        'SELECT reference,scene,split,signature FROM qa_work.signatures ORDER BY reference,scene,split'))
     for (value,) in store.db.execute("SELECT result FROM tasks WHERE status='rejected'"):
         counters['rejections'][json.loads(value)['reason']] += 1
     stats = {**counters, 'accepted_cases': store.count(), 'positives': positives,
@@ -458,7 +484,22 @@ def audit_cases(store):
              'base_scenes': store.db.execute("SELECT count(DISTINCT json_extract(record,'$.base_scene_id')) FROM cases").fetchone()[0],
              'defect_families': defect_families, 'bbox_area_bins': bbox_sizes, 'issues_per_case': issue_counts,
              'near_duplicate_baseline_clusters': near, 'cross_split_near_duplicate_clusters': cross,
-             'similarity_method': 'equal_dhash64_candidates_not_confirmed_duplicates',
-             'human_verified': 0, 'qa': 'passed'}
+             'similarity_method': similarity['method'], 'similarity': similarity,
+             'human_verified': 0, 'qa': 'failed' if similarity['confirmed_pairs'] else
+             'incomplete' if similarity['status'] != 'complete' else 'passed'}
+    stats['split_groups'] = store.db.execute(
+        "SELECT count(DISTINCT json_extract(record,'$.split_group')) FROM cases").fetchone()[0]
+    stats['structural_fingerprints'] = store.db.execute('''SELECT count(DISTINCT coalesce(
+        json_extract(record,'$.structure.split_group'), json_extract(record,'$.recipe.source.split_group')))
+        FROM cases''').fetchone()[0]
+    stats['source_split_support'] = [dict(zip(('source', 'split', 'cases', 'groups', 'base_scenes'), row))
+        for row in store.db.execute('''SELECT json_extract(record,'$.source_project_id'),
+            json_extract(record,'$.split'),count(*),count(DISTINCT json_extract(record,'$.split_group')),
+            count(DISTINCT json_extract(record,'$.base_scene_id')) FROM cases GROUP BY 1,2 ORDER BY 1,2''')]
+    stats['evaluation_representativeness'] = 'not_established'
     (store.root / 'qa.json').write_text(canonical(stats) + '\n')
+    if similarity['confirmed_pairs']:
+        raise ValueError(f"near-duplicate split leakage: {similarity['confirmed_pairs']} pairs")
+    if similarity['status'] != 'complete':
+        raise ValueError(f"similarity audit incomplete: {similarity['reason']}")
     return stats

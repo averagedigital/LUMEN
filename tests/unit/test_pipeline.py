@@ -56,6 +56,42 @@ def test_source_split_group_does_not_replace_provenance_or_lineage():
     assert record['split'] == group_split(record['split_group'])
 
 
+def test_component_operators_are_scheduled_without_removing_text_operators():
+    from lumen_data.pipeline import OPERATORS
+    positives = {op for op in OPERATORS if op != 'clean' and not op.startswith('benign_')}
+    assert positives == {'text_clip_x', 'text_clip_y', 'text_contrast_failure',
+        'viewport_partial_cutoff', 'sibling_occlusion', 'flex_overflow', 'grid_track_collapse',
+        'container_height_collapse', 'header_collision', 'table_cell_overlap', 'dropdown_clipping',
+        'modal_content_overflow', 'input_adornment_collision', 'image_aspect_distortion', 'svg_clipping'}
+
+
+def test_cause_region_and_visible_scenario_metadata_are_separate_from_issue_boxes():
+    payload = recipe(0, {'variants_per_scene': 10, 'seed': 123}, 'v3')
+    payload.update(operator='grid_track_collapse', viewport=[800, 600], dpr=2)
+    finding = {'id': 'grid', 'symptom': 'grid_track_collapse', 'family': 'layout', 'bbox': [20, 20, 80, 80],
+        'evidence': {'oracle_id': 'component-grid-v1', 'baseline_passed': True, 'after_failed': True}}
+    result = {'status': 'accepted_bug', 'issues': [finding], 'browser': 'fixture',
+        'receipt': {'operator': payload['operator'], 'target': 'grid', 'params': {},
+                    'cause_region_css': {'x': 5, 'y': 5, 'width': 300, 'height': 100}},
+        'scenario_tags': ['sticky_header'],
+        'scene': {'html': '<main><section><button>Save</button></section></main>',
+                  'page': {'layout_variant': 'dashboard/detail'}, 'state': {'hard_negative_types': ['hidden_dialog']}}}
+    record = build_record(payload, result,
+                          dict.fromkeys(('reference', 'current', 'raw_change_mask'), 'a' * 64),
+                          {'changed_pixels': 100})
+    assert record['cause_region_xyxy_px'] == [10, 10, 610, 210]
+    assert record['issues'][0]['bbox_xyxy_px'] == [20, 20, 80, 80]
+    assert record['scenario_tags'] == ['sticky_header']
+    assert 'component_geometry' in record['declared_scope']
+    assert record['template_lineage_id'] == 'lumen-grammar-v3/dashboard'
+    assert record['split_group'] == 'lineage:lumen-grammar-v3/dashboard'
+    assert record['structure']['split_group'].startswith('dom-v1:')
+    result.update(status='accepted_clean', issues=[], receipt=None)
+    negative = build_record(payload, result, record['assets'], {'changed_pixels': 0})
+    assert negative['scenario_tags'] == record['scenario_tags']
+    assert 'cause_region_xyxy_px' not in negative
+
+
 @pytest.mark.parametrize('variants', [1, 2, 7, 10, 16])
 def test_scene_family_does_not_determine_positive_or_negative(variants):
     classes = {family: set() for family in ARCHETYPES}

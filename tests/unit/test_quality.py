@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import json
 
 from lumen_data.contracts import case_id, group_split
 from lumen_data.pipeline import qa
@@ -13,7 +14,7 @@ def add_case(store, index, group, baseline, base_scene=None):
     record = valid_case()
     record.update(case_id=case_id({'index': index}), base_scene_id=base_scene or f'scene-{index}',
                   split_group=group, split=group_split(group), operator='text_clip_x',
-                  structural_family_id=group, source_project_id='lumen-grammar')
+                  template_lineage_id=group, structural_family_id=group, source_project_id='lumen-grammar')
     record['capture'].update(locale='en')
     current = baseline.copy()
     current[10:20, 10 + index:20 + index] = 0
@@ -25,11 +26,15 @@ def add_case(store, index, group, baseline, base_scene=None):
 
 def test_qa_rejects_same_base_scene_across_splits_with_different_pixels(tmp_path):
     store = Store(tmp_path)
+    (tmp_path / 'qa.json').write_text('{"qa":"passed"}')
     for index, family in enumerate(('chat', 'calendar', 'admin')):
         add_case(store, index, f'lumen-grammar-v2/{family}',
                  np.full((100, 200, 3), 240 + index, np.uint8), base_scene='shared-scene')
     with pytest.raises(ValueError, match='base scene split leakage'):
         qa(tmp_path)
+    report = json.loads((tmp_path / 'qa.json').read_text())
+    assert report['qa'] == 'failed'
+    assert 'base scene split leakage' in report['error']
 
 
 def test_qa_rejects_identical_baselines_across_splits(tmp_path):
@@ -41,16 +46,37 @@ def test_qa_rejects_identical_baselines_across_splits(tmp_path):
         qa(tmp_path)
 
 
-def test_qa_reports_similar_baselines_without_dropping_subtle_positives(tmp_path):
+def test_qa_does_not_claim_pass_when_similar_flat_baselines_are_unresolved(tmp_path):
     store = Store(tmp_path)
     for index, group in enumerate(['lumen-grammar-v2/chat', 'lumen-grammar-v2/calendar', 'lumen-grammar-v2/admin']):
         baseline = np.full((100, 200, 3), 240 + index, np.uint8)
         add_case(store, index, group, baseline)
-    report = qa(tmp_path)
+    with pytest.raises(ValueError, match='similarity audit incomplete'):
+        qa(tmp_path)
+    report = json.loads((tmp_path / 'qa.json').read_text())
     assert report['accepted_cases'] == 3 and report['positives'] == 3
     assert report['near_duplicate_baseline_clusters'] == 1
     assert report['cross_split_near_duplicate_clusters'] == 1
-    assert report['qa'] == 'passed'
+    assert report['qa'] == 'incomplete'
+    assert report['similarity']['unresolved_pairs'] == 3
+
+
+def test_qa_confirms_near_duplicate_pixels_using_real_image_signatures(tmp_path):
+    store = Store(tmp_path)
+    for index, family in enumerate(('chat', 'calendar', 'admin')):
+        baseline = np.full((100, 200, 3), 240 + index, np.uint8)
+        baseline[30:80, 40:160] = 20
+        baseline[40:70, 50:150] = 255
+        add_case(store, index, f'lumen-grammar-v2/{family}', baseline)
+    with pytest.raises(ValueError, match='near-duplicate split leakage'):
+        qa(tmp_path)
+    report = json.loads((tmp_path / 'qa.json').read_text())
+    assert report['similarity']['confirmed_pairs'] == 3
+    assert report['qa'] == 'failed'
+    assert report['accepted_cases'] == 3
+    assert report['split_groups'] == 3
+    assert {row['split']: row['groups'] for row in report['source_split_support']} == {'train': 1, 'val': 1, 'test': 1}
+    assert report['evaluation_representativeness'] == 'not_established'
 
 
 def test_qa_rejects_missing_evaluation_split(tmp_path):
