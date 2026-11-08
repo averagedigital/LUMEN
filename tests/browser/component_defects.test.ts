@@ -279,3 +279,23 @@ test('auto-height native modal mutation keeps the baseline container height', as
         assert.deepEqual(await page.screenshot(), reference);
     } finally { await page.close(); }
 });
+
+test('modal overflow expands real nested content rather than an empty spacer', async () => {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    try {
+        await page.setContent('<body style="margin:24px;color:#111;background:white;font:18px Arial"><main>Workspace overview</main><dialog style="width:min(400px,80vw);box-sizing:border-box;padding:20px;overflow:visible;color:#111;background:white"><section><h2>Save changes</h2><p>Review the selected records.</p></section><form method="dialog"><button>Confirm</button></form></dialog></body>');
+        await page.locator('dialog').evaluate((el: HTMLDialogElement) => el.showModal());
+        const before = await componentSnapshot(page);
+        assert.deepEqual(componentBaselineProblems(before), []);
+        const target = discoverComponent(before, 'modal_content_overflow')[0];
+        assert.ok(target);
+        const reference = await page.screenshot();
+        const styles = await page.locator('dialog,dialog *').evaluateAll(elements => elements.map(el => el.getAttribute('style')));
+        await applyComponent(page, 'modal_content_overflow', target, before, 42);
+        const after = await componentSnapshot(page);
+        assert.equal(validateComponents(before, after, [800,600], 1).length, 1);
+        assert.notDeepEqual(await page.screenshot(), reference);
+        await page.locator('dialog,dialog *').evaluateAll((elements, styles) => elements.forEach((el,i) => styles[i] === null ? el.removeAttribute('style') : el.setAttribute('style', styles[i]!)), styles);
+        assert.deepEqual(await page.screenshot(), reference);
+    } finally { await page.close(); }
+});

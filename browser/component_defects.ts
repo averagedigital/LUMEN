@@ -241,7 +241,8 @@ export async function applyComponent(page: Page, operator: string, target: Compo
             case 'modal_content_overflow':
                 el.style.height = `${r.height}px`;
                 el.style.overflow = 'hidden';
-                children[0].style.minHeight = `${r.height * 1.6}px`;
+                children[0].style.fontSize = `${parseFloat(getComputedStyle(children[0]).fontSize) * 4}px`;
+                children[0].style.lineHeight = '1.5';
                 break;
             case 'input_adornment_collision': {
                 const input = el.querySelector('input');
