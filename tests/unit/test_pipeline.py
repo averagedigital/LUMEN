@@ -37,6 +37,25 @@ def test_wrong_dimensions_and_no_local_effect_are_rejected(tmp_path):
         build_record({}, {'status': 'unverified'}, {}, {})
 
 
+def test_source_split_group_does_not_replace_provenance_or_lineage():
+    from lumen_data.contracts import group_split
+    payload = recipe(0, {'variants_per_scene': 10, 'seed': 123}, 'v1')
+    payload['source'] = {'base_scene_id': 'base-one', 'source_project_id': 'websight',
+        'template_lineage_id': None, 'structural_family_id': 'table-form',
+        'split_group': 'dom-v1:independent-structure',
+        'provenance': {'license': 'test', 'revision': 'source-v1'}}
+    payload['scene'] = None
+    record = build_record(payload, {'status': 'accepted_clean', 'issues': [], 'browser': 'fixture'},
+                          dict.fromkeys(('reference', 'current', 'raw_change_mask'), 'a' * 64),
+                          {'changed_pixels': 0})
+    assert record['source_project_id'] == 'websight'
+    assert record['template_lineage_id'] is None
+    assert record['base_scene_id'] == 'base-one'
+    assert record['structural_family_id'] == 'table-form'
+    assert record['split_group'] == 'dom-v1:independent-structure'
+    assert record['split'] == group_split(record['split_group'])
+
+
 @pytest.mark.parametrize('variants', [1, 2, 7, 10, 16])
 def test_scene_family_does_not_determine_positive_or_negative(variants):
     classes = {family: set() for family in ARCHETYPES}

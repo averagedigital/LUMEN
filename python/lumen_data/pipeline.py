@@ -129,7 +129,8 @@ def build_record(payload, result, assets, stats):
     source = payload.get('source')
     scene_id = source['base_scene_id'] if source else case_id(payload['scene'])
     archetype = source['structural_family_id'] if source else payload['scene']['archetype']
-    group = source['template_lineage_id'] if source else f'lumen-grammar-v2/{archetype}'
+    lineage = source['template_lineage_id'] if source else f'lumen-grammar-v2/{archetype}'
+    group = source['split_group'] if source and 'split_group' in source else lineage
     issues = []
     for index, finding in enumerate(result['issues']):
         box = Box(*finding['bbox'])
@@ -140,7 +141,7 @@ def build_record(payload, result, assets, stats):
                                                min(width, box.x2 + 24), min(height, box.y2 + 24)],
                        'severity': 'unknown', 'evidence': finding['evidence']})
     record = {'schema_version': 'lumen.case.v1', 'case_id': case_id(payload),
-              'base_scene_id': scene_id, 'scene_id': scene_id, 'template_lineage_id': group,
+              'base_scene_id': scene_id, 'scene_id': scene_id, 'template_lineage_id': lineage,
               'source_project_id': source['source_project_id'] if source else 'lumen-grammar', 'structural_family_id': archetype,
               'split_group': group, 'split': group_split(group), 'backend': 'browser',
               'seed': payload['seed'], 'recipe': payload, 'operator': payload['operator'],
