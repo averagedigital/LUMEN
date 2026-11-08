@@ -51,3 +51,10 @@ test('script exceptions in clock callbacks are source errors, not infrastructure
   assert.equal(result.status,'invalid_baseline');
   assert.equal((result.evidence as any).reason,'javascript_error');
 });
+test('zero-delay interval exceeds render budget without killing subsequent captures',async()=>{
+  const result=await captureCase(browser,{...request,render_mode:'offline-js',operator:'clean',
+    html:shell+'<p id="timer">Account settings</p><script>setInterval(()=>{document.getElementById("timer").textContent=String(Date.now())},0)</script>'});
+  assert.equal(result.status,'render_timeout');
+  assert.deepEqual(result.evidence,{reason:'capture_deadline',limit_ms:45000});
+  assert.equal((await captureCase(browser,{...request,render_mode:'offline-js'})).status,'accepted_bug');
+});

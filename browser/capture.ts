@@ -104,7 +104,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     blocked.push(new URL(route.request().url()).protocol);
     return route.abort();
   });
-  const deadline = setTimeout(() => { void context.close().catch(() => {}); }, 45000);
+  let timedOut = false;
+  const deadline = setTimeout(() => { timedOut = true; void context.close().catch(() => {}); }, 45000);
   try {
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
@@ -293,6 +294,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       timings: {baseline: captured - started,
         mutation_capture_oracle: verified - captured, rollback: performance.now() - verified}};
   } catch (error) {
+    if (timedOut) return {status: 'render_timeout', issues: [], evidence: {reason: 'capture_deadline', limit_ms: 45000}};
     if (javascript && error instanceof Error && /^clock\.runFor: [A-Za-z]*Error:/.test(error.message)) {
       return {status: 'invalid_baseline', issues: [], evidence: {reason: 'javascript_error'}};
     }

@@ -65,6 +65,8 @@ def verify_sources(manifest, asset_root, references, output, *, workers=2, limit
                     second = worker.request(payload)
                     if second['status'] == 'resource_error':
                         raise RuntimeError('browser resource_error; verification stopped')
+                    if second['status'] == 'render_timeout':
+                        return record, 'render_timeout', second.get('evidence')
                     if second.get('reference') != result['reference'] or second['status'] != 'accepted_clean':
                         return record, 'not_reproducible', None
                     source_hash = record['source_reference_sha256']

@@ -86,3 +86,33 @@ def test_worker_resource_failure_is_not_cached_as_source_rejection(tmp_path, mon
         module.verify_sources(manifest, tmp_path, tmp_path, tmp_path/'out')
     Worker.failed = False
     assert module.verify_sources(manifest, tmp_path, tmp_path, tmp_path/'out')['counts'] == {'verified': 1}
+
+
+@pytest.mark.parametrize('timeout_on', [1, 2])
+def test_render_budget_rejection_is_explicit_on_either_capture(tmp_path, monkeypatch, timeout_on):
+    import base64
+    import json
+    import sqlite3
+    import lumen_data.source_verification as module
+    monkeypatch.setattr(module, 'guard', lambda path: None)
+    monkeypatch.setattr(module, 'revision', lambda: 'fixed-generator')
+    manifest = tmp_path / 'sources.jsonl'
+    manifest.write_text(json.dumps({'base_scene_id': 'one', 'html': 'source', 'assets': {},
+        'source_viewport': [128, 72]})+'\n')
+    evidence = {'reason': 'capture_deadline', 'limit_ms': 45000}
+    class Worker:
+        def __init__(self, *args):
+            self.calls = 0
+        def request(self, payload):
+            self.calls += 1
+            if self.calls == timeout_on:
+                return {'status': 'render_timeout', 'evidence': evidence}
+            return {'status': 'accepted_clean', 'reference': base64.b64encode(png('white')).decode()}
+        def close(self):
+            pass
+    monkeypatch.setattr(module, 'Worker', Worker)
+    report = module.verify_sources(manifest, tmp_path, tmp_path, tmp_path/'out')
+    assert report['counts'] == {'render_timeout': 1}
+    assert (tmp_path/'out/manifest.jsonl').read_text() == ''
+    with sqlite3.connect(tmp_path/'out/verification.sqlite') as db:
+        assert json.loads(db.execute('SELECT evidence FROM results').fetchone()[0]) == evidence
