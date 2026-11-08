@@ -1,4 +1,4 @@
-import type {BrowserContext, Page} from 'playwright';
+import {errors, type BrowserContext, type Page} from 'playwright';
 import {spawn} from 'node:child_process';
 import {createHash, randomUUID} from 'node:crypto';
 import {mkdir, open, readFile, rename, rm, stat, statfs} from 'node:fs/promises';
@@ -168,6 +168,24 @@ export async function visitSource<T>(page: Page, request: SourceRequest,
     if (!response?.ok() || !permitted(page.url(), request.allowed_hosts)) throw new SourceRejected('source HTTP or redirect');
     await page.evaluate(async () => {await document.fonts.ready;});
     await page.waitForTimeout(1000);
+    try{
+      await page.waitForFunction(()=>Array.from(document.querySelectorAll<HTMLElement>('body,body *')).some(el=>{
+        if(['SCRIPT','STYLE','NOSCRIPT'].includes(el.tagName)||
+          !el.checkVisibility({opacityProperty:true,visibilityProperty:true,contentVisibilityAuto:true}))return false;
+        const bounds=el.getBoundingClientRect();if(bounds.width<=0||bounds.height<=0)return false;
+        if(['IMG','SVG','CANVAS','VIDEO'].includes(el.tagName))return true;
+        return Array.from(el.childNodes).some(node=>{
+          if(node.nodeType!==Node.TEXT_NODE||!node.textContent?.trim())return false;
+          const range=document.createRange();range.selectNode(node);
+          return Array.from(range.getClientRects()).some(r=>r.width>0&&r.height>0);
+        });
+      }),undefined,{timeout:15000});
+      await page.waitForLoadState('networkidle',{timeout:15000});
+    }catch(error){
+      if(transportError)throw transportError;
+      if(error instanceof errors.TimeoutError)throw new SourceRejected('source render readiness timeout');
+      throw error;
+    }
     if(transportError) throw transportError;
     return await visit({assets,signal:abort.signal,bytes:()=>totalBytes});
   } finally {

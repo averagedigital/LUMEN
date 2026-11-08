@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {createServer, type Server} from 'node:https';
 import {execFileSync} from 'node:child_process';
-import {captureSource, SourceRejected} from '../../browser/source_capture.ts';
+import {captureSource, SourceRejected, visitSource} from '../../browser/source_capture.ts';
 
 let browser: Browser;
 let certificates: string;
@@ -222,3 +222,22 @@ for(const status of [429,503]) for(const resource of ['document','image']) {
     } finally {await f.close();}
   });
 }
+
+test('public source waits for asynchronous SPA content before accepting a baseline',async()=>{
+  const f=await fixture('<div id="root"></div><script>setTimeout(()=>{document.querySelector("#root").innerHTML="<h1>Ready dashboard</h1>"},1800)</script>');
+  try{
+    const result=await captureSource(f.page,{url,allowed_hosts:['localhost'],asset_root:f.root});
+    assert.ok(result.elements?.some(el=>el.tag==='h1'&&el.text==='Ready dashboard'&&el.state.visible),'empty SPA shell was accepted');
+    assert.equal(result.source_sha256,result.restored_sha256);
+  }finally{await f.close();}
+});
+
+test('transparent shell text and media do not make an empty SPA ready',async()=>{
+  const f=await fixture('<p style="opacity:0">Loading</p><canvas style="opacity:0" width="80" height="80"></canvas><div id="root"></div><script>setTimeout(()=>{document.querySelector("#root").innerHTML="<h1>Ready dashboard</h1>"},1800)</script>');
+  try{
+    await visitSource(f.page,{url,allowed_hosts:['localhost'],asset_root:f.root},async()=>{
+      assert.equal(await f.page.locator('h1').isVisible(),true,'transparent shell was accepted');
+      assert.equal(await f.page.locator('h1').innerText(),'Ready dashboard');
+    });
+  }finally{await f.close();}
+});
