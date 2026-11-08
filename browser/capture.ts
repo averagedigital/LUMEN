@@ -13,6 +13,7 @@ import { COMPOSITE_OPERATORS, applyComposite } from './composite_mutations.ts';
 import { RESPONSIVE_OPERATORS, applyResponsive, breakpointCatalog } from './responsive_mutations.ts';
 
 export type Request = { html: string; operator: string; seed: number; viewport: [number, number]; dpr: number; locale?: string; annotations?: boolean; initialModal?: string;
+  render_mode?: 'static' | 'offline-js';
   resize_path?: number[][];
   inspect_breakpoints?: boolean;
   control_of?: string; control_component?: 0 | 1;
@@ -56,6 +57,8 @@ async function componentIssues(page: Page, findings: Finding[], target: string, 
 
 export async function captureCase(browser: Browser, request: Request): Promise<CaptureResult> {
   const {html, seed, viewport, dpr} = request;
+  const javascript = request.render_mode === 'offline-js';
+  if (request.render_mode !== undefined && !['static', 'offline-js'].includes(request.render_mode)) throw new Error('invalid capture request');
   if (!OPERATORS.includes(request.operator as Operator)) throw new Error('unknown operator');
   const boundaryControl = request.operator === 'benign_near_boundary';
   const compositeControl = request.operator === 'benign_composite_control';
@@ -76,14 +79,17 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
   const started = performance.now();
   const context = await browser.newContext({viewport: {width: initial[0], height: initial[1]},
     deviceScaleFactor: dpr, locale: request.locale ?? 'en-US', timezoneId: 'UTC',
-    colorScheme: 'light', reducedMotion: 'reduce', serviceWorkers: 'block', javaScriptEnabled: false,
+    colorScheme: 'light', reducedMotion: 'reduce', serviceWorkers: 'block', javaScriptEnabled: javascript,
     acceptDownloads: false});
   const blocked: string[] = [];
   const fonts = new Map<string, Buffer>();
+  let javascriptErrors = 0;
+  if (javascript) await context.routeWebSocket('**/*', socket => { blocked.push('websocket'); socket.close(); });
   await context.route('**/*', async route => {
     const asset = request.assets?.[route.request().url()];
     if (asset && process.env.LUMEN_ASSET_ROOT && /^[a-f0-9]{64}$/.test(asset.sha256) &&
-        ['text/css', 'font/woff2', 'image/jpeg', 'image/png', 'image/svg+xml', 'image/webp'].includes(asset.content_type)) {
+        ['text/css', 'font/woff2', 'image/jpeg', 'image/png', 'image/svg+xml', 'image/webp',
+          ...(javascript ? ['text/javascript', 'application/javascript'] : [])].includes(asset.content_type)) {
       try {
         const path = join(process.env.LUMEN_ASSET_ROOT, asset.sha256);
         if ((await stat(path)).size > 8 * 1024 * 1024) throw new Error('asset size limit');
@@ -101,10 +107,22 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
   try {
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
+    page.on('pageerror', () => { javascriptErrors++; });
+    if (javascript) {
+      // Offline JS has a fixed initialization window; later timers stay paused.
+      await page.clock.install({time: new Date('2026-01-01T00:00:00Z')});
+      await page.clock.pauseAt(new Date('2026-01-01T00:00:01Z'));
+      await page.evaluate(seed => {
+        let state = seed >>> 0;
+        Math.random = () => { state = (Math.imul(1664525, state) + 1013904223) >>> 0; return state / 4294967296; };
+      }, seed);
+    }
     await page.setContent(html, {waitUntil: 'load', timeout: 15000});
+    if (javascript) await page.clock.runFor(1000);
     if (request.resize_path) {
       for (const size of [...request.resize_path.slice(1), viewport]) {
         await page.setViewportSize({width: size[0], height: size[1]});
+        if (javascript) await page.clock.runFor(100);
         await page.evaluate(async () => { await document.fonts.ready; });
       }
       await page.evaluate(async () => {
@@ -126,6 +144,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       style.textContent = '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}';
       document.head.append(style);
     });
+    if (javascriptErrors) return {status: 'invalid_baseline', issues: [], evidence: {reason: 'javascript_error', count: javascriptErrors}};
     const imagesReady = await page.evaluate(() => Array.from(document.images).every(i => i.complete && i.naturalWidth > 0));
     if (!imagesReady || blocked.length) return {status: 'invalid_baseline', issues: [], evidence: {reason: 'missing_assets', blocked: blocked.length}};
     if (request.initialModal) {
@@ -261,6 +280,8 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
       TEXT_SYMPTOMS.includes(issue.symptom) :
       issue.symptom === componentSymptom(operator)))) status = 'accepted_bug';
     else if (!changed) status = 'no_visible_effect';
+    if (javascriptErrors || blocked.length) return {status: 'invalid_baseline', issues: [],
+      evidence: {reason: javascriptErrors ? 'javascript_error' : 'missing_assets', blocked: blocked.length, count: javascriptErrors}};
     return {status, issues, receipt, reference: reference.toString('base64'), current: current.toString('base64'),
       rollback: true, browser: browser.version(), elements, statesAfter, interaction, scrollBefore, scrollAfter, scenario_tags,
       ...(request.resize_path ? {resize_trace: [...request.resize_path, viewport]} : {}),

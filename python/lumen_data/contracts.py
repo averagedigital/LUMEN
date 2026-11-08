@@ -10,7 +10,7 @@ GRAMMAR_V2 = ('dashboard', 'crm', 'admin', 'shop', 'product', 'checkout', 'setti
 
 
 def asset_suffix(content_type):
-    suffix = {'text/css': 'css', 'font/woff2': 'woff2', 'image/jpeg': 'jpg',
+    suffix = {'text/css': 'css', 'text/javascript': 'js', 'application/javascript': 'js', 'font/woff2': 'woff2', 'image/jpeg': 'jpg',
               'image/png': 'png', 'image/svg+xml': 'svg', 'image/webp': 'webp'}.get(content_type)
     if suffix is None:
         raise ValueError('unsupported source asset')

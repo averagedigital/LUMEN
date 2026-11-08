@@ -171,6 +171,7 @@ def build_record(payload, result, assets, stats):
               'corpus': source.get('corpus', 'unclassified') if source else 'lumen-synth',
               'defect_origin': 'synthetic',
               'capture': {'viewport_css': payload['viewport'], 'image_px': [width, height],
+                          'render_mode': source.get('render_mode', 'static') if source else 'static',
                           'orientation': 'landscape' if width > height else 'portrait' if height > width else 'square',
                           **({'resize_path': payload['resize_path']} if 'resize_path' in payload else {}),
                           'device_scale_factor': payload['dpr'], 'browser': result['browser'],
@@ -256,6 +257,7 @@ def worker_payload(store, payload):
     if payload.get('source'):
         result['html'] = store.read(payload['source']['html_hash'], 'html').decode()
         result['assets'] = payload['source']['assets']
+        result['render_mode'] = payload['source'].get('render_mode', 'static')
     return result
 
 
