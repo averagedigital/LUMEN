@@ -34,12 +34,12 @@ test('collector captures JS, obeys robots, isolates contexts, bounds routes and 
   const root=await mkdtemp(join(tmpdir(),'lumen-collector-'));
   execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',join(root,'key.pem'),
     '-out',join(root,'cert.pem'),'-days','1','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost'],{stdio:'ignore'});
-  const hits=new Map<string,number>();
+  const hits=new Map<string,number>();let robotsStatus=200;
   const faultOutput=join(root,'fault-output');let collide=true;let collision='';
   const style='<style>body{margin:24px;font:20px Arial;background:white;color:#17212b}a{display:block}</style>';
   const server=createServer({key:await readFile(join(root,'key.pem')),cert:await readFile(join(root,'cert.pem'))},(req,res)=>{
     const path=req.url!;hits.set(path,(hits.get(path)??0)+1);
-    if(path==='/robots.txt'){res.setHeader('content-type','text/plain');return res.end('User-agent: *\nDisallow: /app/0-blocked\n');}
+    if(path==='/robots.txt'){res.statusCode=robotsStatus;res.setHeader('content-type','text/plain');return res.end('User-agent: *\nDisallow: /app/0-blocked\n');}
     res.setHeader('content-type','text/html');
     if(path==='/queue'){
       const respond=()=>res.end(style+'<h1>Queue dashboard</h1><a href="/queue/child">Child</a>');
@@ -49,6 +49,7 @@ test('collector captures JS, obeys robots, isolates contexts, bounds routes and 
     if(path==='/app')return res.end(style+'<h1 id="title"></h1><script>document.cookie="marker=first";document.getElementById("title").textContent="JS dashboard"</script>'+['0-blocked','settings','tables','extra'].map(p=>`<a href="/app/${p}">${p}</a>`).join('')+'<a href="/outside">Outside</a><a href="/app?token=private">Query</a>');
     if(path==='/other')return res.end(style+'<h1 id="title"></h1><script>setTimeout(()=>{document.getElementById("title").textContent=document.cookie.includes("marker=first")?"context leak":"Isolated dashboard"},200)</script>');
     if(path==='/fail'){res.statusCode=503;return res.end('unavailable');}
+    if(path==='/live')return res.end(style+'<style>.label{display:block;width:max-content;white-space:nowrap}</style><h1>Live dashboard</h1><canvas width="80" height="80"></canvas><span class="label">Save account settings</span><script>const c=document.querySelector("canvas").getContext("2d");c.fillStyle="red";c.fillRect(0,0,80,80)</script>');
     res.end(style+'<h1>Settings</h1>');
   });
   await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -95,6 +96,50 @@ test('collector captures JS, obeys robots, isolates contexts, bounds routes and 
     await runFault();
     assert.equal(hits.get('/queue'),1,'saved parent was recaptured after queue failure');
     assert.equal((await readFile(join(faultOutput,'manifest.jsonl'),'utf8')).trim().split('\n').length,2);
+    const liveConfig=join(root,'live-config.json'),liveOutput=join(root,'live-output');
+    await writeFile(liveConfig,JSON.stringify({...config,mode:'live-session',domain_delay_seconds:0,requests_per_minute:600,
+      seeds:[{...seed,id:'live',url:origin+'/live',scope:'/live',allowed_hosts:[`localhost:${address.port}`]}],
+      live_operators:['text_clip_x','clean'],viewport_sweep:[
+        {viewport:[800,600],dpr:1},{viewport:[390,844],dpr:2},
+        {viewport:[844,390],dpr:1,resize_path:[[1280,720],[390,844]]}]}));
+    await promisify(execFile)('node',['--experimental-strip-types','browser/collector.ts',liveConfig,liveOutput],
+      {env:{...process.env,CURL_CA_BUNDLE:join(root,'cert.pem'),NODE_EXTRA_CA_CERTS:join(root,'cert.pem')},timeout:120000,maxBuffer:2**20});
+    const liveRows=(await readFile(join(liveOutput,'live-manifest.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+    assert.equal(liveRows.length,6);
+    const raw=await Promise.all(liveRows.map(async row=>{
+      const content=await readFile(join(liveOutput,'live-cases',row.sha256+'.json'));
+      assert.equal(createHash('sha256').update(content).digest('hex'),row.sha256);
+      return JSON.parse(content.toString());
+    }));
+    assert.equal(new Set(raw.map(r=>r.payload.source.base_scene_id)).size,1);
+    assert.equal(new Set(raw.map(r=>r.payload.source.split_group)).size,1);
+    assert.equal(new Set(raw.map(r=>JSON.stringify([r.payload.viewport,r.payload.dpr]))).size,3);
+    assert.ok(raw.every(r=>r.result.rollback&&r.payload.source.capture_mode==='live-session'));
+    assert.ok(raw.every(r=>!r.payload.source.restored_sha256));
+    assert.ok(raw.filter(r=>r.result.status==='accepted_bug').length>=3);
+    const liveRun=join(root,'live-run'),liveExport=join(root,'live-yolo');
+    const imported=await promisify(execFile)('python',['-m','lumen_data.cli','sources','import-live',
+      '--manifest',join(liveOutput,'live-manifest.jsonl'),'--assets',join(liveOutput,'assets'),'--run',liveRun],
+      {env:process.env,timeout:60000,maxBuffer:2**20});
+    assert.equal(JSON.parse(imported.stdout).accepted,6);
+    const exported=await promisify(execFile)('python',['-m','lumen_data.cli','export','--run',liveRun,
+      '--output',liveExport,'--format','yolo-singleclass'],{env:process.env,timeout:60000,maxBuffer:2**20});
+    assert.equal(JSON.parse(exported.stdout).capture_modes['live-session'],6);
+    const robotsConfig=join(root,'robots-config.json'),robotsOutput=join(root,'robots-output');
+    await writeFile(robotsConfig,JSON.stringify({...config,domain_delay_seconds:0,requests_per_minute:600,
+      seeds:['one','two'].map(id=>({...seed,id,url:origin+'/robots-error/'+id,scope:'/robots-error',allowed_hosts:[`localhost:${address.port}`]}))}));
+    const runRobots=(target:string)=>promisify(execFile)('node',['--experimental-strip-types','browser/collector.ts',robotsConfig,target],
+      {env:{...process.env,CURL_CA_BUNDLE:join(root,'cert.pem'),NODE_EXTRA_CA_CERTS:join(root,'cert.pem')},timeout:120000,maxBuffer:2**20});
+    robotsStatus=503;const robotsBefore=hits.get('/robots.txt')??0;
+    await runRobots(robotsOutput);
+    assert.equal(hits.get('/robots-error/one'),undefined,'unreachable robots must prevent navigation');
+    assert.equal(hits.get('/robots-error/two'),undefined);
+    assert.equal((hits.get('/robots.txt')??0)-robotsBefore,1,'robots errors must not be retried per variant');
+    const failures=await Promise.all((await readdir(join(robotsOutput,'results'))).map(async file=>JSON.parse(await readFile(join(robotsOutput,'results',file),'utf8'))));
+    assert.ok(failures.every(entry=>entry.status==='failed'&&entry.error.includes('robots')));
+    robotsStatus=404;
+    await runRobots(join(root,'robots-absent'));
+    assert.equal(hits.get('/robots-error/one'),1,'absent robots permits navigation');
   }finally{
     server.closeAllConnections();await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));
     await rm(root,{recursive:true});

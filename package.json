@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@crawlee/playwright": "3.18.2",
+    "@crawlee/utils": "3.18.2",
     "playwright": "1.65.0"
   },
   "devDependencies": {

@@ -20,12 +20,14 @@ docker run --rm --init lumen-data lumen-data --help
 Требуются Linux с `flock` и установленные npm-зависимости. Конфигурация:
 
 ```json
-{"seeds":[{"id":"example","url":"https://example.com/","scope":"/","family":"content","allowed_hosts":["example.com"],"license":"unknown"}],"max_pages_per_project":5,"max_depth":1,"concurrency":2,"requests_per_minute":20,"domain_delay_seconds":2}
+{"mode":"offline-replay","seeds":[{"id":"example","url":"https://example.com/","scope":"/","family":"content","allowed_hosts":["example.com"],"license":"unknown"}],"max_pages_per_project":5,"max_depth":1,"concurrency":2,"requests_per_minute":20,"domain_delay_seconds":2}
 ```
 
 Сборщик выполняет JS, сохраняет ресурсы и принимает только точное offline-воспроизведение.
 Обход учитывает robots.txt, ограничен origin и `scope`; query, fragment и маршруты выхода/удаления
-не обходятся. Повторные попытки отключены. `allowed_hosts` задаёт точные HTTPS-hosts ресурсов;
+не обходятся. robots.txt запрашивается один раз на origin без повторов (15 с, до 512 КиБ).
+Ошибки сети, redirects, HTTP-ошибки и неверный MIME запрещают обход; 404/410 означают отсутствие правил.
+Повторные попытки отключены. `allowed_hosts` задаёт точные HTTPS-hosts ресурсов;
 нестандартный порт разрешён только вместе с host в этом списке. Все маршруты проекта имеют
 общий `split_group`. Результат `manifest.jsonl` подключается как `source_manifest`,
 а `OUTPUT/assets` — через `LUMEN_ASSET_ROOT`. Источники остаются `research_only` и `unclassified`.
@@ -36,6 +38,15 @@ docker run --rm --init lumen-data lumen-data --help
 сохраняя canvas и JS-состояние. Новые сетевые запросы блокируются на время мутации;
 baseline и откат должны совпасть точно. При неподтверждённом откате страница закрывается.
 Результат помечается `capture_mode: live-session` и не подтверждает независимый offline replay.
+
+Для Live-сбора задайте `mode: live-session`, `live_operators: ["text_clip_x", "clean"]`
+и `viewport_sweep: [{"viewport": [1280, 720], "dpr": 1}]`. Каждый оператор и профиль
+загружаются в отдельном контексте; `resize_path` выполняется после загрузки приложения.
+Принимаются только пары с подтверждённым откатом. Импорт в стандартный формат LUMEN:
+`sources import-live --manifest OUTPUT/live-manifest.jsonl --assets OUTPUT/assets --run RUN`.
+Импорт проверяет PNG, координаты, маски, SHA-256 и согласованность метки с изменением пикселей.
+QA и экспорты сохраняют статистику `capture_modes`; `reproduce` явно отказывает для Live-пар.
+Каталоги Live-импорта и обычной генерации не смешиваются.
 
 В конфигурации генерации `operators` задаёт список операторов; повторения задают веса.
 Список и его порядок фиксируются для `resume`. Без списка используется встроенный каталог.
