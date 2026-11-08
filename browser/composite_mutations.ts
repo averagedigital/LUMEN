@@ -15,7 +15,7 @@ export const COMPOSITE_OPERATORS = Object.keys(SCENARIOS);
 type Declarations = Record<string, string>;
 
 export async function applyComposite(page: Page, operator: string, target: ElementState,
-  before: ElementState[], viewport: [number, number], dpr: number) {
+  before: ElementState[], viewport: [number, number], dpr: number, controlComponent?: 0 | 1) {
   const scenario = SCENARIOS[operator as keyof typeof SCENARIOS];
   if (!scenario) throw new Error('unknown composite scenario');
   const initial = await page.evaluate(id => {
@@ -46,7 +46,8 @@ export async function applyComposite(page: Page, operator: string, target: Eleme
       const declarations = changes(kind, value);
       await set(declarations);
       attempts++;
-      if (!textProblems(await snapshot(page), viewport).length &&
+      const state = await snapshot(page);
+      if (!textProblems(state, viewport).length && !validate(before, state, viewport, dpr).length &&
           !componentBaselineProblems(await componentSnapshot(page)).length) {
         valid.push({operator:kind, value, declarations, standalone_valid:true as const});
       }
@@ -62,7 +63,9 @@ export async function applyComposite(page: Page, operator: string, target: Eleme
     attempts++;
     const findings = validate(before, await snapshot(page), viewport, dpr);
     if (findings.some(f => TEXT_SYMPTOMS.includes(f.symptom))) {
+      if (controlComponent !== undefined) await set([first, second][controlComponent].declarations);
       return {...receipt, components:[first, second], joint_verified:true,
+        control_for:controlComponent === undefined ? undefined : operator, selected_control:controlComponent,
         search:{...receipt.search, attempts}};
     }
   }

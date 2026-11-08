@@ -9,6 +9,8 @@ export const REALISTIC_OPERATORS = [...CONTEXTUAL_OPERATORS, 'font_size_regressi
   'letter_spacing_regression', 'line_height_regression', 'font_family_regression',
   'text_indent_regression', 'relative_offset_regression', 'padding_box_regression'] as const;
 export const TEXT_SYMPTOMS = ['text_clip_x', 'text_clip_y', 'viewport_partial_cutoff', 'sibling_occlusion'];
+export const BOUNDARY_OPERATORS = ['font_size_regression', 'letter_spacing_regression',
+  'line_height_regression', 'text_indent_regression', 'relative_offset_regression', 'padding_box_regression'];
 
 export async function discoverRealistic(page: Page, states: ElementState[], operator: string) {
   const eligible = states.filter(s => !s.intentional && s.fullyInViewport && s.visibleRatio > .99 && s.hitRatio > .95);
@@ -41,7 +43,7 @@ export async function discoverRealistic(page: Page, states: ElementState[], oper
 }
 
 export async function applyRealistic(page: Page, operator: string, target: ElementState,
-  before: ElementState[], viewport: [number, number], dpr: number) {
+  before: ElementState[], viewport: [number, number], dpr: number, nearBoundary = false) {
   if (CONTEXTUAL_OPERATORS.some(name => name === operator)) {
     const cause = await page.evaluate(({id, operator}) => {
       const text = document.querySelector<HTMLElement>(`[data-lumen-id="${CSS.escape(id)}"]`);
@@ -74,13 +76,10 @@ export async function applyRealistic(page: Page, operator: string, target: Eleme
   // Linear sampling does not assume monotonic layout through wrapping transitions.
   const values = ['nowrap_regression', 'word_break_regression'].includes(operator) ? [1] :
     operator === 'font_family_regression' ? [1, 2] : [1.05, 1.1, 1.15, 1.2, 1.3, 1.4, 1.6, 1.8, 2];
-  let attempts = 0, accepted: number | null = null;
-  let lastValid: number | null = null;
-  for (const value of values) {
-    attempts++;
-    await page.evaluate(({id, operator, initial, value}) => {
+  const set = async (value: number | null) => page.evaluate(({id, operator, initial, value}) => {
       const el = document.querySelector<HTMLElement>(`[data-lumen-id="${CSS.escape(id)}"]`)!;
       if (initial.style === null) el.removeAttribute('style'); else el.setAttribute('style', initial.style);
+      if (value === null) return;
       if (operator === 'font_size_regression') el.style.fontSize = `${initial.fontSize * value}px`;
       else if (operator === 'letter_spacing_regression') el.style.letterSpacing = `${initial.fontSize * (value - 1) * .3}px`;
       else if (operator === 'line_height_regression') {
@@ -97,16 +96,24 @@ export async function applyRealistic(page: Page, operator: string, target: Eleme
         el.style.overflowWrap = 'normal'; el.style.wordBreak = 'normal';
       } else throw new Error('unknown realistic mutation');
     }, {id: target.id, operator, initial, value});
+  let attempts = 0, accepted: number | null = null;
+  let lastValid: number | null = null;
+  for (const value of values) {
+    attempts++;
+    await set(value);
     const after = await snapshot(page);
     const findings = validate(before, after, viewport, dpr);
     if (findings.some(f => TEXT_SYMPTOMS.includes(f.symptom))) {
       accepted = value;
       break;
     }
-    if (!textProblems(after, viewport).length &&
+    if (!findings.length && !textProblems(after, viewport).length &&
         !componentBaselineProblems(await componentSnapshot(page)).length) lastValid = value;
   }
-  return {operator, mechanism_id: operator, target: target.id, params: {value: accepted},
+  const selected = nearBoundary ? (accepted === null ? null : lastValid) : accepted;
+  if (nearBoundary) await set(selected);
+  return {operator, mechanism_id: operator, target: target.id, params: {value: selected},
+    control_for: nearBoundary ? operator : undefined,
     cause_region_css: target.rect, symptoms: [] as string[], origin: 'synthetic',
     search: {strategy: 'bounded_linear', attempts, limit: values.length,
       valid_near_boundary: lastValid, broken_near_boundary: accepted}};

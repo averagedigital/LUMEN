@@ -8,10 +8,11 @@ import { COMPONENT_OPERATORS, componentSnapshot, componentBaselineProblems,
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { REALISTIC_OPERATORS, TEXT_SYMPTOMS, discoverRealistic, applyRealistic } from './realistic_mutations.ts';
+import { REALISTIC_OPERATORS, BOUNDARY_OPERATORS, TEXT_SYMPTOMS, discoverRealistic, applyRealistic } from './realistic_mutations.ts';
 import { COMPOSITE_OPERATORS, applyComposite } from './composite_mutations.ts';
 
 export type Request = { html: string; operator: string; seed: number; viewport: [number, number]; dpr: number; locale?: string; annotations?: boolean; initialModal?: string;
+  control_of?: string; control_component?: 0 | 1;
   assets?: Record<string, {sha256: string; content_type: string}> };
 export type CaptureResult = {
   status: string; issues: Finding[]; evidence?: unknown; reference?: string; current?: string;
@@ -51,6 +52,12 @@ async function componentIssues(page: Page, findings: Finding[], target: string, 
 export async function captureCase(browser: Browser, request: Request): Promise<CaptureResult> {
   const {html, seed, viewport, dpr} = request;
   if (!OPERATORS.includes(request.operator as Operator)) throw new Error('unknown operator');
+  const boundaryControl = request.operator === 'benign_near_boundary';
+  const compositeControl = request.operator === 'benign_composite_control';
+  if ((boundaryControl && !BOUNDARY_OPERATORS.includes(request.control_of ?? '')) ||
+      (compositeControl && (!COMPOSITE_OPERATORS.includes(request.control_of ?? '') ||
+        ![0,1].includes(request.control_component as number)))) throw new Error('invalid control request');
+  const mechanism = boundaryControl || compositeControl ? request.control_of! : request.operator;
   if (!Number.isSafeInteger(seed) || seed < 0 || html.length > 2_000_000 || ![1, 2].includes(dpr) ||
       viewport.length !== 2 || viewport.some(x => !Number.isInteger(x) || x < 240 || x > 3840) ||
       viewport[0] * viewport[1] * dpr ** 2 > 16_777_216) throw new Error('invalid capture request');
@@ -127,15 +134,15 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     const componentsBefore = await componentSnapshot(page, discoverLayouts);
     const componentOperator = COMPONENT_OPERATORS.some(name => name === request.operator);
     const componentCandidates = discoverComponent(componentsBefore, request.operator);
-    const compositeOperator = COMPOSITE_OPERATORS.includes(request.operator);
-    const realisticOperator = compositeOperator || REALISTIC_OPERATORS.some(name => name === request.operator);
-    const candidates = realisticOperator ? await discoverRealistic(page, before, request.operator) : discover(before, request.operator);
+    const compositeOperator = COMPOSITE_OPERATORS.includes(mechanism);
+    const realisticOperator = compositeOperator || REALISTIC_OPERATORS.some(name => name === mechanism);
+    const candidates = realisticOperator ? await discoverRealistic(page, before, mechanism) : discover(before, request.operator);
     const baselineProblems = textProblems(before, viewport);
     if (baselineProblems.length) return {status: 'invalid_baseline', issues: [], evidence: baselineProblems};
     const componentProblems = componentBaselineProblems(componentsBefore);
     if (componentProblems.length) return {status: 'invalid_baseline', issues: [], evidence: componentProblems};
     const negative = request.operator === 'clean' || request.operator.startsWith('benign_');
-    if (componentOperator ? !componentCandidates.length : !candidates.length && !(negative && componentsBefore.length)) {
+    if (componentOperator ? !componentCandidates.length : !candidates.length && !(negative && !realisticOperator && componentsBefore.length)) {
       return {status: 'inapplicable', issues: []};
     }
     const reference = await stable(page);
@@ -163,9 +170,10 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     } else if (componentOperator) {
       receipt = await applyComponent(page, operator, componentCandidates[seed % componentCandidates.length], componentsBefore, seed);
     } else if (compositeOperator) {
-      receipt = await applyComposite(page, operator, candidates[seed % candidates.length], before, viewport, dpr);
+      receipt = await applyComposite(page, mechanism, candidates[seed % candidates.length], before, viewport, dpr,
+        compositeControl ? request.control_component : undefined);
     } else if (realisticOperator) {
-      receipt = await applyRealistic(page, operator, candidates[seed % candidates.length], before, viewport, dpr);
+      receipt = await applyRealistic(page, mechanism, candidates[seed % candidates.length], before, viewport, dpr, boundaryControl);
     } else if (operator !== 'clean') {
       receipt = await apply(page, operator, candidates[seed % candidates.length], before, seed);
     }
@@ -213,7 +221,7 @@ export async function captureCase(browser: Browser, request: Request): Promise<C
     let status = 'unverified';
     if (operator === 'clean' && !changed && issues.length === 0) status = 'accepted_clean';
     else if (operator.startsWith('benign_') && changed && issues.length === 0 && validAfter) status = 'accepted_benign_change';
-    else if (changed && issues.some(issue => realisticOperator ?
+    else if (!negative && changed && issues.some(issue => realisticOperator ?
       TEXT_SYMPTOMS.includes(issue.symptom) :
       issue.symptom === componentSymptom(operator))) status = 'accepted_bug';
     else if (!changed) status = 'no_visible_effect';
